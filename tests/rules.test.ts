@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { canPlace, isInMidfield, scoreOverride, type GoalState, type OverrideState } from '../src/games/override/rules';
-import { hubActive, launchSpeedFor, scoreRebuilt, towerPoints } from '../src/games/rebuilt/rules';
+import { autoWinner, canPlace, isInMidfield, scoreOverride, visibleHalves, type GoalState, type OverrideState, type PinItem } from '../src/games/override/rules';
+import { flightAt, hubActive, launchSpeedFor, scoreRebuilt, solveShot, towerPoints } from '../src/games/rebuilt/rules';
 
 const goal = (o: Partial<GoalState>): GoalState => ({ id: 'g', kind: 'short', quadrant: 'W', stack: [], ...o });
 const state = (goals: GoalState[], o: Partial<OverrideState> = {}): OverrideState => ({
@@ -10,56 +10,69 @@ const state = (goals: GoalState[], o: Partial<OverrideState> = {}): OverrideStat
   autoBonus: null,
   ...o,
 });
+const pin = (cone: PinItem['cone'], prism: PinItem['prism']): PinItem => ({ type: 'pin', cone, prism });
 
-describe('Override scoring', () => {
-  it('alliance-color Pins score 5 for their color', () => {
-    const s = scoreOverride(state([goal({ stack: [{ type: 'pin', up: 'red', down: 'yellow' }] })]));
+describe('Override scoring (per Pin half)', () => {
+  it('both halves of a Pin on a Goal score', () => {
+    const s = scoreOverride(state([goal({ stack: [pin('red', 'blue')] })]));
     expect(s.red.total).toBe(5);
-    expect(s.blue.total).toBe(0);
+    expect(s.blue.total).toBe(5);
   });
 
-  it('yellow Pins score 10 for whoever owns the quadrant Toggle', () => {
-    const g = goal({ quadrant: 'S', stack: [{ type: 'pin', up: 'yellow', down: 'yellow' }] });
-    expect(scoreOverride(state([g])).red.total).toBe(0);
-    const s = scoreOverride(state([g], { toggles: { N: null, E: null, S: 'blue', W: null } }));
-    expect(s.blue.yellowPins).toBe(10);
+  it('yellow halves score 10 for the quadrant Toggle owner', () => {
+    const g = goal({ quadrant: 'S', stack: [pin('red', 'yellow')] });
+    expect(scoreOverride(state([g])).red.total).toBe(5);
+    const s = scoreOverride(state([g], { toggles: { N: null, E: null, S: 'red', W: null } }));
+    expect(s.red.total).toBe(15);
   });
 
-  it('flipping a Toggle moves yellow points live', () => {
-    const g = goal({ quadrant: 'E', stack: [{ type: 'pin', up: 'yellow', down: 'red' }, { type: 'cup' }, { type: 'pin', up: 'yellow', down: 'blue' }] });
-    const red = scoreOverride(state([g], { toggles: { N: null, E: 'red', S: null, W: null } }));
-    const blue = scoreOverride(state([g], { toggles: { N: null, E: 'blue', S: null, W: null } }));
-    expect(red.red.yellowPins).toBe(20);
-    expect(blue.blue.yellowPins).toBe(20);
+  it('a Cup with its opaque half up hides the next Pin’s lower half', () => {
+    const g = goal({ stack: [pin('red', 'yellow'), { type: 'cup', opaqueUp: true }, pin('red', 'yellow')] });
+    expect(visibleHalves(g)).toEqual(['red', 'yellow', 'yellow']);
+  });
+
+  it('a Cup turned over hides the lower Pin’s upper half instead', () => {
+    const g = goal({ stack: [pin('red', 'yellow'), { type: 'cup', opaqueUp: false }, pin('red', 'yellow')] });
+    expect(visibleHalves(g)).toEqual(['red', 'red', 'yellow']);
+  });
+
+  it('the Tall Goal’s yellows go to the alliance with more robots in the Midfield', () => {
+    const g = goal({ id: 'c', kind: 'tall', quadrant: null, stack: [pin('yellow', 'yellow')] });
+    expect(scoreOverride(state([g], { robotsInMidfield: { red: 1, blue: 0 } })).red.yellowPins).toBe(20);
+    expect(scoreOverride(state([g], { robotsInMidfield: { red: 1, blue: 1 } })).red.yellowPins).toBe(0);
   });
 
   it('midfield and auto bonus', () => {
     const s = scoreOverride(state([], { robotsInMidfield: { red: 2, blue: 1 }, autoBonus: 'red' }));
     expect(s.red.total).toBe(16 + 12);
     expect(s.blue.total).toBe(8);
-    const tie = scoreOverride(state([], { autoBonus: 'tie' }));
-    expect(tie.red.autoBonus).toBe(6);
+    expect(scoreOverride(state([], { autoBonus: 'tie' })).red.autoBonus).toBe(6);
+  });
+
+  it('the auto bonus counts Pin points only', () => {
+    const g = goal({ stack: [pin('blue', 'blue')] });
+    expect(autoWinner(state([g], { robotsInMidfield: { red: 2, blue: 0 } }))).toBe('blue');
   });
 
   it('stacks alternate Pin, Cup, Pin', () => {
     const g = goal({});
-    expect(canPlace(g, { type: 'cup' }, 'red').ok).toBe(false);
-    expect(canPlace(g, { type: 'pin', up: 'red', down: 'yellow' }, 'red').ok).toBe(true);
-    g.stack.push({ type: 'pin', up: 'red', down: 'yellow' });
-    expect(canPlace(g, { type: 'pin', up: 'red', down: 'yellow' }, 'red').ok).toBe(false);
-    expect(canPlace(g, { type: 'cup' }, 'red').ok).toBe(true);
+    expect(canPlace(g, { type: 'cup', opaqueUp: true }, 'red').ok).toBe(false);
+    expect(canPlace(g, pin('red', 'yellow'), 'red').ok).toBe(true);
+    g.stack.push(pin('red', 'yellow'));
+    expect(canPlace(g, pin('red', 'yellow'), 'red').ok).toBe(false);
+    expect(canPlace(g, { type: 'cup', opaqueUp: true }, 'red').ok).toBe(true);
   });
 
   it('only the owning alliance can score its Alliance Goal', () => {
     const g = goal({ kind: 'alliance', alliance: 'blue' });
-    expect(canPlace(g, { type: 'pin', up: 'red', down: 'yellow' }, 'red').ok).toBe(false);
-    expect(canPlace(g, { type: 'pin', up: 'blue', down: 'yellow' }, 'blue').ok).toBe(true);
+    expect(canPlace(g, pin('red', 'yellow'), 'red').ok).toBe(false);
+    expect(canPlace(g, pin('blue', 'yellow'), 'blue').ok).toBe(true);
   });
 
-  it('midfield is the 24" diamond', () => {
+  it('midfield is the 48" diamond', () => {
     expect(isInMidfield(0, 0)).toBe(true);
-    expect(isInMidfield(12, 12)).toBe(true);
-    expect(isInMidfield(13, 12)).toBe(false);
+    expect(isInMidfield(0.3, 0.29)).toBe(true);
+    expect(isInMidfield(0.31, 0.31)).toBe(false);
   });
 });
 
@@ -101,5 +114,22 @@ describe('REBUILT rules', () => {
     const y = v * Math.sin(a) * t - 0.5 * 9.81 * t * t;
     expect(y).toBeCloseTo(h, 6);
     expect(launchSpeedFor(1, 5, (10 * Math.PI) / 180)).toBeNull();
+  });
+
+  it('drag shortens a shot compared with a vacuum', () => {
+    const a = (50 * Math.PI) / 180;
+    const vac = flightAt(10, a, 6, 0)!;
+    const air = flightAt(10, a, 6)!;
+    expect(air.y).toBeLessThan(vac.y);
+  });
+
+  it('solved shots pass through the target on the way down', () => {
+    const d = 3.5;
+    const h = 1.45;
+    const shot = solveShot(d, h, (40 * Math.PI) / 180, (80 * Math.PI) / 180, 17)!;
+    expect(shot).not.toBeNull();
+    const r = flightAt(shot.speed, shot.angle, d)!;
+    expect(r.y).toBeCloseTo(h, 2);
+    expect(r.vy).toBeLessThan(0);
   });
 });

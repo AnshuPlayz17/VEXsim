@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { RAPIER, ROBOT_GROUPS, ROBOT_MOVE_FILTER, groups, GROUP } from '../core/physics';
 import { yawQuat } from '../core/builder';
-import { wrapAngle } from '../core/units';
+import { clamp, wrapAngle } from '../core/units';
+import { type RobotAnim, type RobotModel, type ModelBuilder, defaultAnim } from './models/types';
 import {
   type ChassisCommand,
   type DriveInput,
@@ -16,10 +17,32 @@ import {
 
 export type Alliance = 'red' | 'blue';
 
+export interface ShooterSpec {
+  /** Balls per second. */
+  rate: number;
+  /** Preferred launch angle, rad. */
+  angle: number;
+  /** Turret aims independently of the chassis; otherwise the whole robot aims. */
+  turret: boolean;
+  /** Which way a chassis-fixed shooter fires. */
+  facing: 'front' | 'back';
+  /** Hood range, rad. */
+  hoodMin: number;
+  hoodMax: number;
+  /** Max exit speed, m/s. */
+  speedMax: number;
+  /** Muzzle height above the floor, m. */
+  height: number;
+}
+
 export interface RobotConfig {
   id: string;
   name: string;
   description: string;
+  /** Team the design comes from, if it is based on a real robot. */
+  team?: string;
+  /** Where the design comes from. */
+  source?: string;
   /** Frame length front-to-back, m (includes bumpers for FRC). */
   length: number;
   /** Frame width side-to-side, m. */
@@ -33,15 +56,18 @@ export interface RobotConfig {
   /** How far ahead of the frame the intake reaches, m. */
   intakeReach: number;
   /** FRC shooter. */
-  shooter?: { rate: number; angle: number; turret: boolean };
+  shooter?: ShooterSpec;
   /** Seconds to climb one tower level (FRC). */
   climbTime?: number;
   /** Highest tower level the mechanism can reach (FRC). */
   maxClimb?: 0 | 1 | 2 | 3;
+  /** Seconds for the lift to travel its full range (VEX). */
+  liftTime?: number;
   style: 'vex' | 'frc';
+  model: ModelBuilder;
+  /** Short stat lines for the setup screen. */
+  stats?: Record<string, string>;
 }
-
-const ALLIANCE_COLOR: Record<Alliance, number> = { red: 0xd92b2b, blue: 0x1f5fd6 };
 
 /**
  * A driven robot. It is a kinematic body moved by Rapier's character controller,
@@ -54,7 +80,11 @@ export class Robot {
   readonly mesh = new THREE.Group();
   private readonly visual = new THREE.Group();
   private readonly controller: RAPIER.KinematicCharacterController;
-  private readonly rollers: THREE.Mesh[] = [];
+  readonly model: RobotModel;
+  /** Mechanism state for the model, set by the game each step. */
+  anim: RobotAnim = defaultAnim();
+  /** When set, the chassis turns itself to this heading (shooter auto-align). */
+  aimHeading: number | null = null;
   private readonly rotateTestShape: RAPIER.Cuboid;
 
   heading = 0;
@@ -65,7 +95,6 @@ export class Robot {
   /** Extra visual lift (climbing animation). */
   lift = 0;
   distance = 0;
-  intakeSpin = 0;
   private pitch = 0;
   private roll = 0;
   private groundY = 0;
@@ -103,7 +132,9 @@ export class Robot {
     this.controller.enableAutostep(0.02, 0.05, false);
     this.controller.setApplyImpulsesToDynamicBodies(false);
 
-    this.buildMesh(opts.ghost ?? false);
+    this.model = cfg.model(alliance, opts.ghost ?? false);
+    this.visual.add(this.model.root);
+    this.mesh.add(this.visual);
     scene.add(this.mesh);
     this.syncVisual(1);
   }
@@ -155,6 +186,11 @@ export class Robot {
     const target = active
       ? targetCommand(this.cfg.drive, input, this.heading, driverYaw, p, tuning)
       : { vx: 0, vz: 0, omega: 0 };
+    if (active && this.aimHeading !== null) {
+      // Auto-align: a P controller on heading error, like a real "aim" button.
+      const err = wrapAngle(this.aimHeading - this.heading);
+      target.omega = clamp(err * 9, -p.maxTurnRate, p.maxTurnRate);
+    }
     this.cmd = stepChassis(this.cfg.drive, this.cmd, target, this.heading, p, dt);
     if (this.frozen) this.cmd = { vx: 0, vz: 0, omega: 0 };
 
@@ -189,6 +225,15 @@ export class Robot {
       }
     }
     this.distance += Math.hypot(mv.x, mv.z);
+    const sp = Math.hypot(this.cmd.vx, this.cmd.vz);
+    const [ffx, ffz] = forwardOf(this.heading);
+    const along = this.cmd.vx * ffx + this.cmd.vz * ffz;
+    this.anim.wheelSpin += ((Math.sign(along) || 1) * sp + Math.abs(this.cmd.omega) * this.cfg.width * 0.4) * dt / 0.05;
+    if (sp > 0.05) {
+      const [rrx, rrz] = rightOf(this.heading);
+      const right = this.cmd.vx * rrx + this.cmd.vz * rrz;
+      this.anim.driveDir = Math.atan2(-right, along);
+    }
     const t = this.body.translation();
     this.body.setNextKinematicTranslation({ x: t.x + mv.x, y: Math.max(-0.05, t.y + mv.y), z: t.z + mv.z });
     this.body.setNextKinematicRotation(yawQuat(this.heading));
@@ -254,107 +299,7 @@ export class Robot {
     this.mesh.rotation.set(0, this.heading, 0);
     // Local +x is forward, so pitch is a rotation about local z and roll about local x.
     this.visual.rotation.set(-this.roll, 0, this.pitch, 'YXZ');
-    for (const r of this.rollers) r.rotation.y += this.intakeSpin * 0.35;
-  }
-
-  private buildMesh(ghost: boolean): void {
-    const { length: L, width: W, height: H } = this.cfg;
-    const allianceColor = ALLIANCE_COLOR[this.alliance];
-    const mat = (color: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
-      new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.55,
-        metalness: 0.3,
-        transparent: ghost,
-        opacity: ghost ? 0.28 : 1,
-        depthWrite: !ghost,
-        ...extra,
-      });
-    const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number) => {
-      const mesh = new THREE.Mesh(geo, m);
-      mesh.position.set(x, y, z);
-      mesh.castShadow = !ghost;
-      mesh.receiveShadow = !ghost;
-      this.visual.add(mesh);
-      return mesh;
-    };
-    this.mesh.add(this.visual);
-
-    if (this.cfg.style === 'frc') {
-      // Bumpers in alliance color around a dark aluminium frame.
-      const bh = 0.13;
-      const bt = 0.085;
-      const bumper = mat(allianceColor, { roughness: 0.85, metalness: 0 });
-      add(new THREE.BoxGeometry(L, bh, bt), bumper, 0, 0.1, W / 2 - bt / 2);
-      add(new THREE.BoxGeometry(L, bh, bt), bumper, 0, 0.1, -W / 2 + bt / 2);
-      add(new THREE.BoxGeometry(bt, bh, W - 2 * bt), bumper, L / 2 - bt / 2, 0.1, 0);
-      add(new THREE.BoxGeometry(bt, bh, W - 2 * bt), bumper, -L / 2 + bt / 2, 0.1, 0);
-      const frame = mat(0x2a2d33);
-      add(new THREE.BoxGeometry(L - 2 * bt, 0.05, W - 2 * bt), frame, 0, 0.07, 0);
-      // Hopper / superstructure.
-      const hop = add(
-        new THREE.BoxGeometry(L * 0.55, H - 0.2, W * 0.7),
-        mat(0x9aa3ad, { transparent: true, opacity: ghost ? 0.2 : 0.35, metalness: 0.1 }),
-        -L * 0.08,
-        0.1 + (H - 0.2) / 2,
-        0,
-      );
-      hop.castShadow = false;
-      // Shooter hood.
-      add(new THREE.BoxGeometry(0.18, 0.12, W * 0.4), mat(0x3b3f47), -L * 0.12, H - 0.06, 0);
-      // Number plates.
-      const plate = mat(0xffffff, { roughness: 0.9, metalness: 0 });
-      add(new THREE.BoxGeometry(0.18, 0.06, 0.002), plate, 0, 0.1, W / 2 + 0.001);
-      add(new THREE.BoxGeometry(0.18, 0.06, 0.002), plate, 0, 0.1, -W / 2 - 0.001);
-      // Swerve modules / wheels.
-      const wheelMat = mat(0x111111, { roughness: 0.9, metalness: 0 });
-      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-        const w = add(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 16), wheelMat, sx * (L / 2 - 0.16), 0.05, sz * (W / 2 - 0.16));
-        w.rotation.x = Math.PI / 2;
-      }
-    } else {
-      // VEX: C-channel frame, colored side plates, flex-wheel intake.
-      const metal = mat(0xb8bec7, { metalness: 0.75, roughness: 0.35 });
-      const ch = 0.025;
-      add(new THREE.BoxGeometry(L, ch, ch), metal, 0, 0.05, W / 2 - ch);
-      add(new THREE.BoxGeometry(L, ch, ch), metal, 0, 0.05, -W / 2 + ch);
-      add(new THREE.BoxGeometry(ch, ch, W), metal, -L / 2 + ch, 0.05, 0);
-      add(new THREE.BoxGeometry(ch, ch, W), metal, L / 2 - ch, 0.05, 0);
-      add(new THREE.BoxGeometry(ch, H * 0.8, ch), metal, -L / 2 + ch, H * 0.4 + 0.05, W / 2 - ch);
-      add(new THREE.BoxGeometry(ch, H * 0.8, ch), metal, -L / 2 + ch, H * 0.4 + 0.05, -W / 2 + ch);
-      const side = mat(allianceColor, { metalness: 0.1, roughness: 0.6 });
-      add(new THREE.BoxGeometry(L * 0.8, H * 0.45, 0.006), side, 0, H * 0.35, W / 2 - 0.004);
-      add(new THREE.BoxGeometry(L * 0.8, H * 0.45, 0.006), side, 0, H * 0.35, -W / 2 + 0.004);
-      add(new THREE.BoxGeometry(L * 0.5, 0.05, W * 0.6), mat(0x222222), -L * 0.1, 0.12, 0); // brain + battery
-      // Mast for the pin placer.
-      add(new THREE.BoxGeometry(0.04, H * 0.9, 0.04), metal, L * 0.2, H * 0.45, 0);
-      const wheelMat = mat(0x1d1d1d, { roughness: 0.9, metalness: 0 });
-      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-        const w = add(new THREE.CylinderGeometry(0.041, 0.041, 0.03, 18), wheelMat, sx * (L / 2 - 0.07), 0.041, sz * (W / 2 - 0.035));
-        w.rotation.x = Math.PI / 2;
-      }
-    }
-    // Intake rollers across the front.
-    const rollerMat = mat(this.cfg.style === 'frc' ? 0x30b050 : 0x2fae4f, { roughness: 0.8, metalness: 0 });
-    for (const yy of [0.06, 0.16]) {
-      const r = add(
-        new THREE.CylinderGeometry(0.025, 0.025, this.cfg.intakeWidth, 12),
-        rollerMat,
-        L / 2 + 0.03,
-        yy,
-        0,
-      );
-      r.rotation.x = Math.PI / 2;
-      this.rollers.push(r);
-    }
-    // Direction arrow on top so the driver always knows where the front is.
-    const arrow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.06, 0.14, 3),
-      new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: ghost, opacity: ghost ? 0.4 : 1 }),
-    );
-    arrow.rotation.z = -Math.PI / 2;
-    arrow.position.set(L * 0.25, H + 0.02, 0);
-    this.visual.add(arrow);
+    this.model.animate(this.anim, 1 / 60);
   }
 
   dispose(scene: THREE.Scene): void {

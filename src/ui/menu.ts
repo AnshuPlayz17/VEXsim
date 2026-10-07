@@ -152,7 +152,9 @@ export class Ui {
         <label class="opt ${p.id === preset.id ? 'on' : ''}">
           <input type="radio" name="preset" value="${p.id}" ${p.id === preset.id ? 'checked' : ''}>
           <div><b>${p.name}</b><small>${p.description}</small>
-          <small class="spec">${(p.length / 0.0254).toFixed(0)}×${(p.width / 0.0254).toFixed(0)}×${(p.height / 0.0254).toFixed(0)}" · ${p.params.maxSpeed.toFixed(1)} m/s · holds ${p.capacity}</small></div>
+          <small class="spec">${(p.length / 0.0254).toFixed(1)}″ × ${(p.width / 0.0254).toFixed(1)}″ × ${(p.height / 0.0254).toFixed(1)}″ tall · ${(p.params.maxSpeed * 3.281).toFixed(1)} ft/s · holds ${p.capacity}</small>
+          ${p.id === preset.id && p.stats ? `<small class="statline">${Object.entries(p.stats).map(([k, v]) => `<span><i>${k}</i> ${v}</span>`).join('')}</small>` : ''}
+          ${p.id === preset.id && p.source ? `<small class="src">${p.source}</small>` : ''}</div>
         </label>`,
       )
       .join('');
