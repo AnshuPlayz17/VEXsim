@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { RAPIER, PIECE_GROUPS, groups, GROUP } from '../../core/physics';
 import { FieldBuilder, canvasTexture } from '../../core/builder';
-import { IN } from '../../core/units';
+import { IN, wrapAngle } from '../../core/units';
 import type { Phase } from '../../core/match';
 import type { Action, ControlState } from '../../core/input';
 import type { RobotConfig, Alliance } from '../../robot/robot';
+import { frcModel, BUMPER } from '../../robot/models/frc';
 import type {
   Footprint,
   GameContext,
@@ -16,87 +17,174 @@ import type {
   ScoreLine,
   StartPose,
 } from '../types';
-import { REBUILT, type RebuiltPhaseId, type TowerLevel, hubActive, launchSpeedFor, scoreRebuilt, towerPoints } from './rules';
+import {
+  FUEL_DRAG_K,
+  REBUILT,
+  type RebuiltPhaseId,
+  type TowerLevel,
+  hubActive,
+  scoreRebuilt,
+  solveShot,
+  towerPoints,
+} from './rules';
 
-// Field geometry, inches (origin at field center, X along the length, red wall at -X).
-const HL = 651.2 / 2;
-const HW = 317.7 / 2;
-const ZONE = 158.6;
-const HUB = 47;
-const HUB_NEAR = -HL + ZONE; // red hub near face
-const HUB_X = HUB_NEAR + HUB / 2;
-const BUMP_W = 73;
-const BUMP_H = 6.513;
-const TRENCH_CLEAR = 22.25;
-const HUB_TOP = 72;
-const FUEL_R = (5.91 / 2) * IN;
-const TOWER_Z = -50;
-const TOWER_SPAN = 40;
-const TOWER_X_OFF = 28;
-const RUNGS = [27, 45, 63];
-const DEPOT_Z = 80;
-const OUTPOST_Z = -138;
+// ------------------------------------------------------------- field (m)
+// Dimensions from the 2026 game manual (Section 5, ARENA) and positions from the
+// official field CAD / AprilTag layout. Positions are given per alliance as
+// d = distance out from that alliance's wall, lat = offset to the drivers' LEFT
+// of the field center line.
+const FIELD_L = 651.2 * IN;
+const FIELD_W = 317.7 * IN;
+const HL = FIELD_L / 2;
+const HW = FIELD_W / 2;
+const ZONE = 158.6 * IN; // alliance zone depth = ROBOT STARTING LINE
+const HUB = { size: 47 * IN, d: 158.6 * IN + (47 * IN) / 2, rimFront: 72 * IN, rimBack: 80 * IN, hexR: (41.7 * IN) / 2, aimY: 1.95, exitW: 35.56 * IN, exitY: 30.13 * IN, netOut: 10.26 * IN, netW: 58.41 * IN, netBottom: 49.75 * IN, netTop: 120.36 * IN };
+const BUMP = { width: 73 * IN, depth: 44.4 * IN, height: 6.513 * IN };
+const TRENCH = { width: 65.65 * IN, depth: 47 * IN, height: 40.25 * IN, clearWidth: 50.34 * IN, clearHeight: 22.25 * IN, armThick: 3 * IN };
+const TOWER = { lat: 3.7457 - HW, baseW: 39 * IN, baseD: 45.18 * IN, uprightH: 72.1 * IN, uprightGap: 32.25 * IN, rungExt: 5.875 * IN, rungs: [27 * IN, 45 * IN, 63 * IN], rungR: (1.66 * IN) / 2 };
+const TOWER_UPRIGHT_D = TOWER.baseD - 1.75 * IN - 0.02;
+const DEPOT = { lat: 5.965 - HW, width: 42 * IN, depth: 27 * IN, barrierW: 3 * IN, barrierH: 1.125 * IN };
+const OUTPOST = { lat: 0.666 - HW, chuteY: 28.1 * IN, chuteW: 31.8 * IN, corralW: 35.8 * IN, corralD: 37.6 * IN, corralH: 8.13 * IN };
+const DS_BASE_H = 36.8 * IN;
+const DS_GLASS_H = 42 * IN;
+const GUARDRAIL_H = 20 * IN;
+const DRIVER_LAT = [7.2 - HW, 5.45 - HW, 2.35 - HW];
+const FUEL_R = (5.91 * IN) / 2;
+const FUEL_MASS = 0.215;
+const ROLL_DECEL = 0.35;
+const SCORE_GRACE = 3;
 
 const ALLIANCE_HEX: Record<Alliance, number> = { red: 0xd92b2b, blue: 0x1f5fd6 };
 
-/** Mirror a red-side point to an alliance (180° rotation about the field center). */
-function side(alliance: Alliance, x: number, z: number): [number, number] {
-  return alliance === 'red' ? [x * IN, z * IN] : [-x * IN, -z * IN];
+/** Alliance-relative (d, lat) to world (x, z). Red drivers face +X, so their left is −Z. */
+function P(a: Alliance, d: number, lat: number): [number, number] {
+  return a === 'red' ? [-HL + d, -lat] : [HL - d, lat];
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
+const withBumpers = (inches: number) => (inches + 2 * BUMPER) * IN;
 
 const PRESETS: RobotConfig[] = [
   {
-    id: 'frc-swerve',
-    name: 'Swerve turret shooter',
-    description: 'Low (21.7") so it fits under the TRENCH. Turret, deep hopper, L3 climber.',
-    length: 0.84, width: 0.84, height: 0.55,
+    id: 'frc-2910',
+    name: '2910 Jack in the Bot · Re•Blitz',
+    team: '2910',
+    description: '“Dumper”: a huge hopper and a 4-wide drum fixed to the chassis that fires out the back at 30+ FUEL/s. The whole robot turns to aim. No climber.',
+    source: 'Team 2910’s published 2026 specs and CAD (27″×27.5″ frame, 21.5″ tall, 14.1 ft/s, 58 FUEL).',
+    length: withBumpers(27), width: withBumpers(27.5), height: 21.5 * IN,
     drive: 'swerve',
-    params: { maxSpeed: 4.6, maxAccel: 9, maxDecel: 13, maxTurnRate: 11, maxTurnAccel: 45, trackWidth: 0.6 },
-    capacity: 45, intakeWidth: 0.7, intakeReach: 0.16,
-    shooter: { rate: 9, angle: deg(65), turret: true },
-    climbTime: 1.4, maxClimb: 3, style: 'frc',
+    params: { maxSpeed: 4.3, maxAccel: 10, maxDecel: 13, maxTurnRate: 10, maxTurnAccel: 45, trackWidth: 0.6 },
+    capacity: 58, intakeWidth: 25.5 * IN, intakeReach: 7.8 * IN,
+    shooter: { rate: 32, angle: deg(58), turret: false, facing: 'back', hoodMin: deg(42), hoodMax: deg(74), speedMax: 17, height: 0.5 },
+    maxClimb: 0, style: 'frc',
+    stats: { 'Shot rate': '32 FUEL/s', Aim: 'whole robot (shoots backward)', 'Top speed': '14.1 ft/s', Trench: 'fits' },
+    model: frcModel({ team: '2910', frameL: 27, frameW: 27.5, height: 21.5, drive: 'swerve', colors: { frame: 0xb9bec5, accent: 0x5c6168, trim: 0xc6cbd1 }, hopper: { wallH: 21, net: false, front: 12, back: -8 }, shooter: { type: 'drum', facing: 'back', x: -10.5, z: 0 }, intake: 'slapdown', climber: false }),
   },
   {
-    id: 'frc-tank',
-    name: 'KitBot tank',
-    description: 'Simple tank drive with a fixed shooter. Aim with the whole robot. L1 climb only.',
-    length: 0.8, width: 0.72, height: 0.52,
-    drive: 'tank',
-    params: { maxSpeed: 3.7, maxAccel: 7, maxDecel: 10, maxTurnRate: 8.5, maxTurnAccel: 35, trackWidth: 0.55 },
-    capacity: 25, intakeWidth: 0.55, intakeReach: 0.14,
-    shooter: { rate: 4, angle: deg(55), turret: false },
-    climbTime: 2.5, maxClimb: 1, style: 'frc',
-  },
-  {
-    id: 'frc-tall',
-    name: 'Tall hopper swerve',
-    description: 'Huge hopper and fast shooter, but at 37" it can NOT drive under the TRENCH. Use the BUMPs.',
-    length: 0.86, width: 0.86, height: 0.95,
+    id: 'frc-4414',
+    name: '4414 HighTide · RIPCURRENT',
+    team: '4414',
+    description: 'Extending hopper (~88 FUEL) under a net, a Dye Rotor single-streaming FUEL into a turret that shoots on the move. 2026 World Champion. No climber.',
+    source: 'Team 4414’s published 2026 specs (25″×32″ frame, 21.75″ tall, 13.1 ft/s, 88 FUEL, 18 FUEL/s turret).',
+    length: withBumpers(25), width: withBumpers(32), height: 21.75 * IN,
     drive: 'swerve',
-    params: { maxSpeed: 4.2, maxAccel: 8, maxDecel: 12, maxTurnRate: 10, maxTurnAccel: 40, trackWidth: 0.6 },
-    capacity: 70, intakeWidth: 0.72, intakeReach: 0.16,
-    shooter: { rate: 11, angle: deg(65), turret: true },
-    climbTime: 1.6, maxClimb: 3, style: 'frc',
+    params: { maxSpeed: 3.99, maxAccel: 10, maxDecel: 13, maxTurnRate: 9.5, maxTurnAccel: 42, trackWidth: 0.62 },
+    capacity: 88, intakeWidth: 30 * IN, intakeReach: 0.2,
+    shooter: { rate: 18, angle: deg(62), turret: true, facing: 'front', hoodMin: deg(44), hoodMax: deg(82), speedMax: 16, height: 0.55 },
+    maxClimb: 0, style: 'frc',
+    stats: { 'Shot rate': '18 FUEL/s', Aim: 'turret', 'Top speed': '13.1 ft/s', Trench: 'fits' },
+    model: frcModel({ team: '4414', frameL: 25, frameW: 32, height: 21.75, drive: 'swerve', colors: { frame: 0x0fa3b1, accent: 0x0fa3b1, trim: 0x2b2f36 }, hopper: { wallH: 21, net: true, front: 11, back: -11 }, shooter: { type: 'turret', facing: 'front', x: -1, z: 0 }, intake: 'slapdown', climber: false }),
   },
   {
-    id: 'frc-mecanum',
-    name: 'Mecanum shooter',
-    description: 'Holonomic without swerve complexity. Fixed shooter, L2 climber.',
-    length: 0.8, width: 0.8, height: 0.53,
-    drive: 'xdrive',
-    params: { maxSpeed: 3.9, maxAccel: 7.5, maxDecel: 11, maxTurnRate: 9, maxTurnAccel: 38, trackWidth: 0.55 },
-    capacity: 35, intakeWidth: 0.62, intakeReach: 0.14,
-    shooter: { rate: 6, angle: deg(60), turret: false },
-    climbTime: 2, maxClimb: 2, style: 'frc',
+    id: 'frc-1678',
+    name: '1678 Citrus Circuits · Limestone',
+    team: '1678',
+    description: 'Full-width drum with three hood rollers that fires out the back, fed by a roller floor and ball tunnel. Climbs Level 1.',
+    source: 'Team 1678’s published 2026 specs (27″×27″ frame, 21.6″ tall, 14.8 ft/s, 26 FUEL/s, L1 climb). Hopper size estimated.',
+    length: withBumpers(27), width: withBumpers(27), height: 21.6 * IN,
+    drive: 'swerve',
+    params: { maxSpeed: 4.51, maxAccel: 10.5, maxDecel: 13, maxTurnRate: 10, maxTurnAccel: 45, trackWidth: 0.6 },
+    capacity: 50, intakeWidth: 25 * IN, intakeReach: 0.29,
+    shooter: { rate: 26, angle: deg(56), turret: false, facing: 'back', hoodMin: deg(38), hoodMax: deg(76), speedMax: 17, height: 0.5 },
+    maxClimb: 1, climbTime: 1.6, style: 'frc',
+    stats: { 'Shot rate': '26 FUEL/s', Aim: 'whole robot (shoots backward)', 'Top speed': '14.8 ft/s', Trench: 'fits', Climb: 'Level 1' },
+    model: frcModel({ team: '1678', frameL: 27, frameW: 27, height: 21.6, drive: 'swerve', colors: { frame: 0x1d1f24, accent: 0x5fd13a, trim: 0x2a2c31 }, hopper: { wallH: 21, net: true, front: 12, back: -8 }, shooter: { type: 'drum', facing: 'back', x: -10.5, z: 0 }, intake: 'slapdown', climber: true }),
+  },
+  {
+    id: 'frc-971',
+    name: '971 Spartan Robotics · Mixtape',
+    team: '971',
+    description: 'Two independently aimed turrets fed by a roller floor and a powered separator. Climbs Level 1.',
+    source: 'Team 971’s published 2026 specs (24.5″×29.5″ frame, 22″ tall, 14.4 ft/s, 2 turrets ≈ 20 FUEL/s, L1). Hopper size estimated.',
+    length: withBumpers(24.5), width: withBumpers(29.5), height: 22 * IN,
+    drive: 'swerve',
+    params: { maxSpeed: 4.39, maxAccel: 10, maxDecel: 13, maxTurnRate: 10, maxTurnAccel: 45, trackWidth: 0.6 },
+    capacity: 45, intakeWidth: 29 * IN, intakeReach: 0.18,
+    shooter: { rate: 20, angle: deg(60), turret: true, facing: 'front', hoodMin: deg(35), hoodMax: deg(85), speedMax: 16, height: 0.55 },
+    maxClimb: 1, climbTime: 2.0, style: 'frc',
+    stats: { 'Shot rate': '20 FUEL/s (2 turrets)', Aim: 'twin turrets', 'Top speed': '14.4 ft/s', Trench: 'fits', Climb: 'Level 1' },
+    model: frcModel({ team: '971', frameL: 24.5, frameW: 29.5, height: 22, drive: 'swerve', colors: { frame: 0xb4b9c1, accent: 0xc62828, trim: 0x2a2c31 }, hopper: { wallH: 21, net: true, front: 10, back: -9 }, shooter: { type: 'twin', facing: 'front', x: -5.8, z: 0 }, intake: 'fourbar', climber: true }),
+  },
+  {
+    id: 'frc-1690',
+    name: '1690 Orbit · Kepler',
+    team: '1690',
+    description: 'Compact gear-driven turret on an 8″ bearing that shoots on the move while the intake keeps running. Hopper expands forward under a lattice frame and netting.',
+    source: 'Team 1690’s published 2026 specs (25″×29″ frame, 21.5″ tall, 13.1 ft/s, 12 FUEL/s). Hopper size estimated.',
+    length: withBumpers(25), width: withBumpers(29), height: 21.5 * IN,
+    drive: 'swerve',
+    params: { maxSpeed: 3.99, maxAccel: 10, maxDecel: 13, maxTurnRate: 9.5, maxTurnAccel: 42, trackWidth: 0.6 },
+    capacity: 40, intakeWidth: 27 * IN, intakeReach: 0.2,
+    shooter: { rate: 12, angle: deg(62), turret: true, facing: 'front', hoodMin: deg(40), hoodMax: deg(80), speedMax: 16, height: 0.55 },
+    maxClimb: 0, style: 'frc',
+    stats: { 'Shot rate': '12 FUEL/s', Aim: 'turret', 'Top speed': '13.1 ft/s', Trench: 'fits' },
+    model: frcModel({ team: '1690', frameL: 25, frameW: 29, height: 21.5, drive: 'swerve', colors: { frame: 0x2a2d33, accent: 0x2d6fd6, trim: 0x9aa0a8 }, hopper: { wallH: 21, net: true, front: 11, back: -10 }, shooter: { type: 'turret', facing: 'front', x: -4.7, z: -6.7 }, intake: 'slapdown', climber: false }),
+  },
+  {
+    id: 'frc-4946',
+    name: '4946 The Alpha Dogs · Moto Moto',
+    team: '4946',
+    description: 'A round robot: a 35″ hopper around a turret on the center of rotation, fed by a Dye Rotor. Too tall for the TRENCH, so it takes the BUMPS.',
+    source: 'Team 4946’s published 2026 specs (32.75″ round frame, 29.5″ tall, 12.8 ft/s, 20 FUEL/s). Hopper size estimated.',
+    length: withBumpers(32.75), width: withBumpers(32.75), height: 29.5 * IN,
+    drive: 'swerve',
+    params: { maxSpeed: 3.9, maxAccel: 9.5, maxDecel: 12, maxTurnRate: 9, maxTurnAccel: 40, trackWidth: 0.62 },
+    capacity: 75, intakeWidth: 27 * IN, intakeReach: 0.22,
+    shooter: { rate: 20, angle: deg(62), turret: true, facing: 'front', hoodMin: deg(42), hoodMax: deg(80), speedMax: 16, height: 0.75 },
+    maxClimb: 0, style: 'frc',
+    stats: { 'Shot rate': '20 FUEL/s', Aim: 'turret', 'Top speed': '12.8 ft/s', Trench: 'too tall: BUMPS only' },
+    model: frcModel({ team: '4946', frameL: 32.75, frameW: 32.75, height: 29.5, drive: 'swerve', shape: 'round', colors: { frame: 0x9aa0a8, accent: 0xd32f2f, trim: 0x1d1f24 }, hopper: { wallH: 28, net: true, front: 14, back: -14 }, shooter: { type: 'turret', facing: 'front', x: 0.8, z: 0 }, intake: 'slapdown', climber: false }),
+  },
+  {
+    id: 'frc-practice-l3',
+    name: 'Practice bot: L3 climber',
+    description: 'Not a real team’s robot: a balanced swerve with a turret and a Level 3 climber, for practicing the full TOWER.',
+    source: 'Generic design for TOWER practice.',
+    length: withBumpers(27), width: withBumpers(27), height: 21.5 * IN,
+    drive: 'swerve',
+    params: { maxSpeed: 4.2, maxAccel: 10, maxDecel: 13, maxTurnRate: 10, maxTurnAccel: 45, trackWidth: 0.6 },
+    capacity: 35, intakeWidth: 25 * IN, intakeReach: 0.2,
+    shooter: { rate: 10, angle: deg(62), turret: true, facing: 'front', hoodMin: deg(40), hoodMax: deg(80), speedMax: 16, height: 0.55 },
+    maxClimb: 3, climbTime: 1.5, style: 'frc',
+    stats: { 'Shot rate': '10 FUEL/s', Aim: 'turret', 'Top speed': '13.8 ft/s', Trench: 'fits', Climb: 'Level 3' },
+    model: frcModel({ team: '9999', frameL: 27, frameW: 27, height: 21.5, drive: 'swerve', colors: { frame: 0xc3c8ce, accent: 0xf2a91c, trim: 0x2a2d33 }, hopper: { wallH: 21, net: false, front: 11, back: -9 }, shooter: { type: 'turret', facing: 'front', x: -3, z: 0 }, intake: 'slapdown', climber: true }),
   },
 ];
 
-type FuelState = 0 | 1 | 2; // loose | held | reserve (waiting in an OUTPOST)
+type FuelState = 0 | 1 | 2 | 3; // loose | held | reserve (OUTPOST) | inside a HUB
 const LOOSE = 0;
 const HELD = 1;
 const RESERVE = 2;
+const IN_HUB = 3;
+
+interface ShotSolution {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
+  /** Shooter direction (field yaw) and hood angle, for the model and auto-align. */
+  yaw: number;
+  hood: number;
+  ok: boolean;
+}
 
 class RebuiltRuntime implements GameRuntime {
   private b: FieldBuilder;
@@ -105,11 +193,14 @@ class RebuiltRuntime implements GameRuntime {
   private fuelMesh!: THREE.InstancedMesh;
   private held: number[] = [];
   private outpostQueue: Record<Alliance, number[]> = { red: [], blue: [] };
+  private hubQueue: { i: number; a: Alliance; at: number }[] = [];
   private hubLights: Record<Alliance, THREE.Mesh[]> = { red: [], blue: [] };
   private readonly me: Alliance;
-  private readonly hubPos: [number, number];
+  private readonly hub: Record<Alliance, [number, number]>;
   private tally = { autoFuel: 0, teleopFuel: 0, inactiveFuel: 0, autoTower: 0 as TowerLevel, endTower: 0 as TowerLevel };
   private autoWinner: Alliance | null = null;
+  private lastActive: Record<Alliance, number> = { red: 0, blue: 0 };
+  private time = 0;
   private shootCooldown = 0;
   private intakeCooldown = 0;
   private feedCooldown = 0;
@@ -119,228 +210,233 @@ class RebuiltRuntime implements GameRuntime {
   private trajLine: THREE.Line;
   private trajGood = false;
   private totalScored = 0;
+  private sol: ShotSolution | null = null;
   private matrix = new THREE.Matrix4();
   private hidden = new THREE.Matrix4().makeScale(0, 0, 0);
 
   constructor(private ctx: GameContext) {
     this.me = ctx.robot.alliance;
-    this.hubPos = side(this.me, HUB_X, 0);
+    this.hub = { red: P('red', HUB.d, 0), blue: P('blue', HUB.d, 0) };
     this.b = new FieldBuilder(ctx.world, ctx.scene);
     this.buildField();
     this.spawnFuel();
-    const geo = new THREE.BufferGeometry().setFromPoints(new Array(48).fill(0).map(() => new THREE.Vector3()));
+    const geo = new THREE.BufferGeometry().setFromPoints(new Array(60).fill(0).map(() => new THREE.Vector3()));
     this.trajLine = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: 0x9cff9c, dashSize: 0.12, gapSize: 0.08, transparent: true, opacity: 0.85 }));
     this.trajLine.frustumCulled = false;
     ctx.scene.add(this.trajLine);
-    // Driver mode starts in TELEOP, so the AUTO result comes from settings.
     if (ctx.mode === 'driver') this.autoWinner = this.decideAutoWinner(0);
   }
 
   // ---------------------------------------------------------------- field
   private buildField(): void {
     const b = this.b;
-    const L = HL * 2 * IN;
-    const W = HW * 2 * IN;
-    b.floor(L, W);
+    b.floor(FIELD_L, FIELD_W);
     const carpet = canvasTexture(2048, 1000, (g, w, h) => {
-      g.fillStyle = '#4d5157';
+      g.fillStyle = '#4b4f55';
       g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 9000; i++) {
-        const v = 70 + Math.random() * 20;
+      for (let i = 0; i < 12000; i++) {
+        const v = 66 + Math.random() * 22;
         g.fillStyle = `rgba(${v},${v + 2},${v + 6},0.35)`;
         g.fillRect(Math.random() * w, Math.random() * h, 3, 3);
       }
-      const X = (xin: number) => ((xin + HL) / (HL * 2)) * w;
-      const Z = (zin: number) => ((zin + HW) / (HW * 2)) * h;
-      const tape = (x1: number, z1: number, x2: number, z2: number, color: string, width = 2) => {
+      const X = (x: number) => ((x + HL) / FIELD_L) * w;
+      const Z = (z: number) => ((z + HW) / FIELD_W) * h;
+      const tape = (x1: number, z1: number, x2: number, z2: number, color: string, width = 2 * IN) => {
         g.strokeStyle = color;
-        g.lineWidth = (width / (HL * 2)) * w;
+        g.lineWidth = (width / FIELD_L) * w;
         g.beginPath();
         g.moveTo(X(x1), Z(z1));
         g.lineTo(X(x2), Z(z2));
         g.stroke();
       };
       tape(0, -HW, 0, HW, '#f5f5f5');
-      // Robot starting lines (alliance zone boundary).
-      tape(HUB_NEAR, -HW, HUB_NEAR, HW, '#e04848');
-      tape(-HUB_NEAR, -HW, -HUB_NEAR, HW, '#3b7bf0');
-      // Alliance zone tint.
-      g.fillStyle = 'rgba(217,43,43,0.10)';
-      g.fillRect(0, 0, X(HUB_NEAR), h);
-      g.fillStyle = 'rgba(31,95,214,0.10)';
-      g.fillRect(X(-HUB_NEAR), 0, w - X(-HUB_NEAR), h);
+      tape(-HL + ZONE, -HW, -HL + ZONE, HW, '#e04848');
+      tape(HL - ZONE, -HW, HL - ZONE, HW, '#3b7bf0');
+      g.fillStyle = 'rgba(217,43,43,0.09)';
+      g.fillRect(0, 0, X(-HL + ZONE), h);
+      g.fillStyle = 'rgba(31,95,214,0.09)';
+      g.fillRect(X(HL - ZONE), 0, w - X(HL - ZONE), h);
     });
-    b.decal(carpet, L, W);
+    b.decal(carpet, FIELD_L, FIELD_W);
 
-    // Guardrails (long sides) and alliance walls.
+    // Guardrails (20" polycarbonate on aluminum) along both long sides.
     const rail = b.mat(0xb7bec7, { metal: 0.7, rough: 0.35 });
-    const clear = b.mat(0xd8eaff, { opacity: 0.16, rough: 0.05 });
+    const clear = b.mat(0xd8eaff, { opacity: 0.15, rough: 0.05 });
     const t = 2 * IN;
     for (const sz of [-1, 1]) {
-      b.box({ center: [0, 0.1, sz * (W / 2 + t / 2)], size: [L, 0.2, t], material: rail, collider: false });
-      b.box({ center: [0, 0.2 + 0.15, sz * (W / 2 + t / 2)], size: [L, 0.3, t], material: clear, shadow: false, collider: false });
-      b.solid([0, 1, sz * (W / 2 + t / 2)], [L + 1, 2, t]);
+      b.box({ center: [0, 0.05, sz * (HW + t / 2)], size: [FIELD_L, 0.1, t], material: rail, collider: false });
+      b.box({ center: [0, 0.1 + (GUARDRAIL_H - 0.1) / 2, sz * (HW + t / 2)], size: [FIELD_L, GUARDRAIL_H - 0.1, t], material: clear, shadow: false, collider: false });
+      b.box({ center: [0, GUARDRAIL_H, sz * (HW + t / 2)], size: [FIELD_L, 0.03, t * 1.2], material: rail, collider: false });
+      b.solid([0, 1, sz * (HW + t / 2)], [FIELD_L + 1, 2, t]);
     }
-    for (const a of ['red', 'blue'] as const) {
-      const sx = a === 'red' ? -1 : 1;
-      const color = ALLIANCE_HEX[a];
-      b.box({ center: [sx * (L / 2 + t / 2), 0.45, 0], size: [t, 0.9, W], color: 0x2b2f36, collider: false });
-      b.box({ center: [sx * (L / 2 + t / 2), 0.9 + 0.5, 0], size: [t, 1.0, W], material: clear, shadow: false, collider: false });
-      b.box({ center: [sx * (L / 2 + t / 2), 0.88, 0], size: [t * 1.2, 0.04, W], color, collider: false });
-      b.solid([sx * (L / 2 + t / 2), 1, 0], [t, 2, W + 1]);
-    }
-
     for (const a of ['red', 'blue'] as const) this.buildAllianceSide(a);
   }
 
   private buildAllianceSide(a: Alliance): void {
     const b = this.b;
     const color = ALLIANCE_HEX[a];
-    const P = (x: number, z: number): [number, number] => side(a, x, z);
-
-    // HUB: hollow box, open top at 72". FUEL that drops inside is counted and fed back out.
-    const [hx, hz] = P(HUB_X, 0);
-    const half = (HUB / 2) * IN;
-    const wt = 2 * IN;
-    const top = HUB_TOP * IN;
-    const shell = b.mat(0x4a525e, { metal: 0.45, rough: 0.45 });
-    for (const [ox, oz, w, d] of [
-      [half - wt / 2, 0, wt, HUB * IN],
-      [-half + wt / 2, 0, wt, HUB * IN],
-      [0, half - wt / 2, HUB * IN, wt],
-      [0, -half + wt / 2, HUB * IN, wt],
-    ] as const) {
-      b.box({ center: [hx + ox, top / 2, hz + oz], size: [w, top, d], material: shell });
+    const sx = a === 'red' ? -1 : 1; // which end of the field
+    const out = -sx; // direction from the wall into the field (+d)
+    const t = 2 * IN;
+    // Alliance wall: 36.8" base with 42" of glass above, driver station shelves.
+    const wallX = sx * (HL + t / 2);
+    b.box({ center: [wallX, DS_BASE_H / 2, 0], size: [t, DS_BASE_H, FIELD_W], color: 0x30343b, collider: false });
+    b.box({ center: [wallX, DS_BASE_H + DS_GLASS_H / 2, 0], size: [t, DS_GLASS_H, FIELD_W], material: b.mat(0xd8eaff, { opacity: 0.14, rough: 0.05 }), shadow: false, collider: false });
+    b.box({ center: [wallX, DS_BASE_H, 0], size: [t * 1.3, 0.05, FIELD_W], color, collider: false });
+    b.solid([wallX, 1.2, 0], [t, 2.4, FIELD_W + 1]);
+    for (const lat of DRIVER_LAT) {
+      const [, z] = P(a, 0, lat);
+      b.box({ center: [sx * (HL + 0.35), 0.95, z], size: [0.6, 0.06, 1.4], color: 0x22252a, collider: false });
     }
-    // Funnel lip and hex crown.
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.53, 0.12, 6, 1, true), b.mat(color, { rough: 0.4 }));
-    crown.position.set(hx, top + 0.06, hz);
-    crown.material = new THREE.MeshStandardMaterial({ color, roughness: 0.4, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.6 });
+
+    // ------------------------------------------------------------ HUB
+    const [hx, hz] = P(a, HUB.d, 0);
+    const half = HUB.size / 2;
+    const shell = b.mat(0x4a525e, { metal: 0.45, rough: 0.45 });
+    const wt = 2 * IN;
+    // Alliance-side face up to the 72" front rim, neutral-side face up to 80".
+    b.box({ center: [hx - out * (half - wt / 2), HUB.rimFront / 2, hz], size: [wt, HUB.rimFront, HUB.size], material: shell });
+    const backX = hx + out * (half - wt / 2);
+    // Neutral face has the FUEL exit opening near the bottom (30"–39").
+    b.box({ center: [backX, HUB.exitY / 2, hz], size: [wt, HUB.exitY, HUB.size], material: shell });
+    b.box({ center: [backX, (39 * IN + HUB.rimBack) / 2, hz], size: [wt, HUB.rimBack - 39 * IN, HUB.size], material: shell });
+    for (const s of [-1, 1]) {
+      b.box({ center: [backX, (HUB.exitY + 39 * IN) / 2, hz + s * (HUB.size / 2 - (HUB.size - HUB.exitW) / 4)], size: [wt, 39 * IN - HUB.exitY, (HUB.size - HUB.exitW) / 2], material: shell });
+    }
+    // Side faces slope from the 72" front rim up to the 80" back rim.
+    for (const s of [-1, 1]) {
+      const z = hz + s * (half - wt / 2);
+      const pts: [number, number, number][] = [];
+      for (const zz of [z - wt / 2, z + wt / 2]) {
+        pts.push([hx - out * half, 0, zz], [hx + out * half, 0, zz], [hx - out * half, HUB.rimFront, zz], [hx + out * half, HUB.rimBack, zz]);
+      }
+      b.convex(pts, 0x4a525e);
+    }
+    // Sloped hexagonal crown around the opening (alliance colored), and LED diffusers.
+    const crown = new THREE.Mesh(
+      new THREE.CylinderGeometry(HUB.hexR + 0.05, HUB.hexR, 0.08, 6, 1, true),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.4, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.6 }),
+    );
+    crown.position.set(hx, (HUB.rimFront + HUB.rimBack) / 2 + 0.03, hz);
+    crown.rotation.z = out * Math.atan2(HUB.rimBack - HUB.rimFront, HUB.size);
     b.group.add(crown);
     this.hubLights[a].push(crown);
-    // Light bars on each face.
     for (const [ox, oz, w, d] of [
-      [half + 0.005, 0, 0.01, HUB * IN * 0.8],
-      [-half - 0.005, 0, 0.01, HUB * IN * 0.8],
-      [0, half + 0.005, HUB * IN * 0.8, 0.01],
-      [0, -half - 0.005, HUB * IN * 0.8, 0.01],
+      [half + 0.006, 0, 0.012, HUB.size * 0.86],
+      [-half - 0.006, 0, 0.012, HUB.size * 0.86],
+      [0, half + 0.006, HUB.size * 0.86, 0.012],
+      [0, -half - 0.006, HUB.size * 0.86, 0.012],
     ] as const) {
       const bar = b.box({
-        center: [hx + ox, top - 0.12, hz + oz],
-        size: [w, 0.06, d],
-        material: new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1 }),
+        center: [hx + ox, (1.275 + 1.51) / 2, hz + oz],
+        size: [w, 1.51 - 1.275, d],
+        material: new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, transparent: true, opacity: 0.9 }),
         collider: false,
         shadow: false,
       });
       this.hubLights[a].push(bar);
     }
-    // BUMPS beside the hub (ramped, 6.5" tall).
-    const x0 = HUB_NEAR;
-    const x3 = HUB_NEAR + HUB;
-    const x1 = x0 + 17;
-    const x2 = x3 - 17;
-    for (const zs of [1, -1]) {
-      const z0 = zs * (HUB / 2);
-      const z1 = zs * (HUB / 2 + BUMP_W);
+    // NET behind the HUB catches over-shots (FUEL only).
+    const netX = hx + out * (half + HUB.netOut);
+    const netH = HUB.netTop - HUB.netBottom;
+    const net = b.box({ center: [netX, HUB.netBottom + netH / 2, hz], size: [0.01, netH, HUB.netW], material: b.mat(0x111111, { opacity: 0.25 }), collider: false, shadow: false });
+    net.renderOrder = 2;
+    this.ctx.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(0.01, netH / 2, HUB.netW / 2).setTranslation(netX, HUB.netBottom + netH / 2, hz).setCollisionGroups(groups(GROUP.FIELD, GROUP.PIECE)).setRestitution(0.05),
+    );
+    for (const s of [-1, 1]) b.box({ center: [netX, HUB.netTop / 2, hz + s * HUB.netW / 2], size: [0.05, HUB.netTop, 0.05], color: 0x30343b, collider: false });
+
+    // ---------------------------------------------------- BUMPS + TRENCHES
+    const d0 = HUB.d - BUMP.depth / 2;
+    const d3 = HUB.d + BUMP.depth / 2;
+    const ramp = 17 * IN;
+    const trenchInner = HW - TRENCH.width;
+    for (const side of [1, -1]) {
+      // BUMP from the HUB's side face out to the TRENCH structure.
+      const l0 = side * half;
+      const l1 = side * trenchInner;
       const pts: [number, number, number][] = [];
-      for (const [x, y] of [[x0, 0], [x1, BUMP_H], [x2, BUMP_H], [x3, 0]] as const) {
-        for (const z of [z0, z1]) {
-          const [wx, wz] = P(x, z);
-          pts.push([wx, y * IN, wz]);
+      for (const [d, y] of [[d0, 0], [d0 + ramp, BUMP.height], [d3 - ramp, BUMP.height], [d3, 0]] as const) {
+        for (const l of [l0, l1]) {
+          const [x, z] = P(a, d, l);
+          pts.push([x, y, z]);
         }
       }
-      b.convex(pts, a === 'red' ? 0x7a3a3a : 0x3a4a7a);
-      // Tread stripes.
-      const [cx, cz] = P(HUB_X, zs * (HUB / 2 + BUMP_W / 2));
-      b.box({ center: [cx, BUMP_H * IN + 0.003, cz], size: [((x2 - x1) * IN), 0.004, BUMP_W * IN * 0.9], color: 0xf0c419, collider: false, shadow: false });
+      b.convex(pts, a === 'red' ? 0x6e3a3a : 0x3a4670);
+      const [cx, cz] = P(a, HUB.d, (l0 + l1) / 2);
+      b.box({ center: [cx, BUMP.height + 0.003, cz], size: [(BUMP.depth - 2 * ramp), 0.004, Math.abs(l1 - l0) * 0.9], color: 0xf0c419, collider: false, shadow: false });
 
-      // TRENCH: overhead arm at 22.25" between the bump and the guardrail.
-      const tz0 = zs * (HUB / 2 + BUMP_W);
-      const tz1 = zs * HW;
-      const [ax, az] = P(HUB_X, (tz0 + tz1) / 2);
-      const armT = 4 * IN;
-      const tw = Math.abs(tz1 - tz0) * IN;
-      b.box({
-        center: [ax, TRENCH_CLEAR * IN + armT / 2, az],
-        size: [HUB * IN, armT, tw],
-        material: b.mat(0x5a6170, { metal: 0.6, rough: 0.35 }),
-        collider: 'overhead',
-      });
-      b.box({
-        center: [ax, TRENCH_CLEAR * IN - 0.01, az],
-        size: [HUB * IN * 0.98, 0.02, tw * 0.98],
-        material: b.mat(color, { emissive: color }),
-        collider: false,
-        shadow: false,
-      });
-      // Divider post between bump and trench.
-      const [px, pz] = P(HUB_X, tz0);
-      b.box({ center: [px, ((TRENCH_CLEAR + 4) * IN) / 2, pz], size: [HUB * IN, (TRENCH_CLEAR + 4) * IN, 2 * IN], color: 0x3a3f47 });
+      // TRENCH: two posts, a 3" arm at 22.25" and a top beam at 40.25".
+      const postW = (TRENCH.width - TRENCH.clearWidth) / 2;
+      const tMat = b.mat(0x5a6170, { metal: 0.6, rough: 0.35 });
+      for (const lp of [trenchInner + postW / 2, HW - postW / 2]) {
+        const [px, pz] = P(a, HUB.d, side * lp);
+        b.box({ center: [px, TRENCH.height / 2, pz], size: [TRENCH.depth, TRENCH.height, postW], material: tMat });
+      }
+      const [ax, az] = P(a, HUB.d, side * (trenchInner + TRENCH.width / 2));
+      b.box({ center: [ax, TRENCH.clearHeight + TRENCH.armThick / 2, az], size: [TRENCH.depth, TRENCH.armThick, TRENCH.clearWidth], material: tMat, collider: 'overhead' });
+      b.box({ center: [ax, TRENCH.height - 1.5 * IN, az], size: [TRENCH.depth, 3 * IN, TRENCH.clearWidth], material: tMat, collider: 'overhead' });
+      b.box({ center: [ax, (TRENCH.clearHeight + TRENCH.height) / 2, az], size: [TRENCH.depth * 0.96, TRENCH.height - TRENCH.clearHeight - 3 * IN, TRENCH.clearWidth * 0.98], material: b.mat(color, { opacity: 0.25 }), collider: 'overhead', shadow: false });
+      b.box({ center: [ax, TRENCH.clearHeight - 0.006, az], size: [TRENCH.depth * 0.98, 0.012, TRENCH.clearWidth * 0.98], material: b.mat(0xf0c419, { emissive: 0x3a2f00 }), collider: false, shadow: false });
     }
 
-    // TOWER against the alliance wall: two uprights and three rungs.
-    const towerX = -HL + TOWER_X_OFF;
-    const uprightMat = b.mat(0x9aa3ad, { metal: 0.8, rough: 0.3 });
-    for (const dz of [-TOWER_SPAN / 2, TOWER_SPAN / 2]) {
-      const [ux, uz] = P(towerX, TOWER_Z + dz);
-      b.box({ center: [ux, 0.9, uz], size: [3 * IN, 1.8, 3 * IN], material: uprightMat });
-      const [bx, bz] = P(-HL + TOWER_X_OFF / 2, TOWER_Z + dz);
-      b.box({ center: [bx, 0.05, bz], size: [TOWER_X_OFF * IN, 0.1, 3 * IN], material: uprightMat });
+    // ------------------------------------------------------------- TOWER
+    const upright = b.mat(0x9aa3ad, { metal: 0.8, rough: 0.3 });
+    const [bx, bz] = P(a, TOWER.baseD / 2, TOWER.lat);
+    b.box({ center: [bx, 0.003, bz], size: [TOWER.baseD, 0.006, TOWER.baseW], material: b.mat(0x3a3f47, { metal: 0.6 }), collider: 'field' });
+    for (const s of [-1, 1]) {
+      const lat = TOWER.lat + s * (TOWER.uprightGap / 2 + 0.75 * IN);
+      const [ux, uz] = P(a, TOWER_UPRIGHT_D, lat);
+      b.box({ center: [ux, TOWER.uprightH / 2, uz], size: [3.5 * IN, TOWER.uprightH, 1.5 * IN], material: upright });
+      // Diagonal support back to the wall.
+      const [sx2, sz2] = P(a, TOWER_UPRIGHT_D / 2, lat);
+      const brace = b.box({ center: [sx2, 0.55, sz2], size: [Math.hypot(TOWER_UPRIGHT_D, 1.0), 1.5 * IN, 1.5 * IN], material: upright, collider: false });
+      brace.rotation.z = -out * Math.atan2(1.0, TOWER_UPRIGHT_D);
     }
-    for (const h of RUNGS) {
-      const [rx, rz] = P(towerX, TOWER_Z);
-      const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.83 * IN, 0.83 * IN, TOWER_SPAN * IN, 16), b.mat(0xf0c419, { metal: 0.4 }));
+    const rungSpan = TOWER.uprightGap + 3 * IN + 2 * TOWER.rungExt;
+    for (const h of TOWER.rungs) {
+      const [rx, rz] = P(a, TOWER_UPRIGHT_D, TOWER.lat);
+      const rung = new THREE.Mesh(new THREE.CylinderGeometry(TOWER.rungR, TOWER.rungR, rungSpan, 16), b.mat(0xf0c419, { metal: 0.4 }));
       rung.rotation.x = Math.PI / 2;
-      rung.position.set(rx, h * IN, rz);
+      rung.position.set(rx, h, rz);
       rung.castShadow = true;
       b.group.add(rung);
-      b.solid([rx, h * IN, rz], [1.66 * IN, 1.66 * IN, TOWER_SPAN * IN], 'overhead');
+      b.solid([rx, h, rz], [TOWER.rungR * 2, TOWER.rungR * 2, rungSpan], 'overhead');
     }
-    const [tpx, tpz] = P(towerX, TOWER_Z);
-    b.box({ center: [tpx, 1.8 + 0.03, tpz], size: [4 * IN, 0.06, (TOWER_SPAN + 3) * IN], material: b.mat(color), collider: false });
+    const [tx, tz] = P(a, TOWER_UPRIGHT_D, TOWER.lat);
+    b.box({ center: [tx, TOWER.uprightH, tz], size: [3.5 * IN, 2 * IN, TOWER.uprightGap + 3 * IN], material: b.mat(color), collider: false });
 
-    // DEPOT: low border holds FUEL; robots drive over it.
-    const dx0 = -HL;
-    const dx1 = -HL + 27;
-    const dz0 = DEPOT_Z - 21;
-    const dz1 = DEPOT_Z + 21;
-    const pieceOnly = groups(GROUP.FIELD, GROUP.PIECE);
-    const border = (xa: number, za: number, xb: number, zb: number) => {
-      const [ax, az] = P(xa, za);
-      const [bx, bz] = P(xb, zb);
-      const cx = (ax + bx) / 2;
-      const cz = (az + bz) / 2;
-      const w = Math.max(Math.abs(bx - ax), 1 * IN);
-      const d = Math.max(Math.abs(bz - az), 1 * IN);
-      const mesh = b.box({ center: [cx, 0.02, cz], size: [w, 0.04, d], color, collider: false });
-      mesh.castShadow = false;
-      this.ctx.world.createCollider(
-        RAPIER.ColliderDesc.cuboid(w / 2, 0.06, d / 2).setTranslation(cx, 0.06, cz).setCollisionGroups(pieceOnly),
-      );
+    // ------------------------------------------------------------- DEPOT
+    const pieceAndRobot = groups(GROUP.FIELD, GROUP.PIECE | GROUP.ROBOT);
+    const barrier = (d: number, lat: number, dd: number, ll: number) => {
+      const [x, z] = P(a, d, lat);
+      const size: [number, number, number] = [dd, DEPOT.barrierH, ll];
+      const m = b.box({ center: [x, DEPOT.barrierH / 2, z], size, color, collider: false });
+      m.castShadow = false;
+      this.ctx.world.createCollider(RAPIER.ColliderDesc.cuboid(dd / 2, DEPOT.barrierH / 2, ll / 2).setTranslation(x, DEPOT.barrierH / 2, z).setCollisionGroups(pieceAndRobot));
     };
-    border(dx1, dz0, dx1, dz1);
-    border(dx0, dz0, dx1, dz0);
-    border(dx0, dz1, dx1, dz1);
+    barrier(DEPOT.depth + DEPOT.barrierW / 2, DEPOT.lat, DEPOT.barrierW, DEPOT.width);
+    barrier(DEPOT.depth / 2, DEPOT.lat + DEPOT.width / 2, DEPOT.depth, DEPOT.barrierW);
+    barrier(DEPOT.depth / 2, DEPOT.lat - DEPOT.width / 2, DEPOT.depth, DEPOT.barrierW);
 
-    // OUTPOST + CHUTE in the corner: the human player feeds FUEL from here.
-    const [ox, oz] = P(-HL - 8, OUTPOST_Z);
-    b.box({ center: [ox, 0.6, oz], size: [16 * IN, 1.2, 40 * IN], color: 0x3a3f47, collider: false });
-    const [cx, cz] = P(-HL + 1, OUTPOST_Z);
-    b.box({ center: [cx, 0.55, cz], size: [3 * IN, 0.12, 14 * IN], material: b.mat(color, { emissive: color }), collider: false, shadow: false });
+    // ----------------------------------------------------------- OUTPOST
+    const [ox, oz] = P(a, -0.2, OUTPOST.lat);
+    b.box({ center: [ox, 1.0, oz], size: [0.4, 2.0, OUTPOST.corralW + 0.2], color: 0x3a3f47, collider: false });
+    const [cx, cz] = P(a, 0.02, OUTPOST.lat);
+    b.box({ center: [cx, OUTPOST.chuteY + 3.5 * IN, cz], size: [0.04, 7 * IN, OUTPOST.chuteW], material: b.mat(color, { emissive: color }), collider: false, shadow: false });
+    for (const s of [-1, 1]) {
+      const [wx, wz] = P(a, OUTPOST.corralD / 2, OUTPOST.lat + s * OUTPOST.corralW / 2);
+      b.box({ center: [wx, OUTPOST.corralH / 2, wz], size: [OUTPOST.corralD, OUTPOST.corralH, 1 * IN], color: 0x6b7280 });
+    }
   }
 
   // ----------------------------------------------------------------- fuel
   private addFuel(x: number, y: number, z: number, state: FuelState): void {
     const body = this.ctx.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, y, z)
-        .setLinearDamping(0.05)
-        .setAngularDamping(1.5)
-        .setCcdEnabled(true)
-        .setCanSleep(true),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setLinearDamping(0).setAngularDamping(0.05).setCcdEnabled(true).setCanSleep(true),
     );
     this.ctx.world.createCollider(
-      RAPIER.ColliderDesc.ball(FUEL_R).setMass(0.23).setRestitution(0.35).setFriction(0.7).setCollisionGroups(PIECE_GROUPS),
+      RAPIER.ColliderDesc.ball(FUEL_R).setMass(FUEL_MASS).setRestitution(0.45).setFriction(0.35).setCollisionGroups(PIECE_GROUPS),
       body,
     );
     if (state !== LOOSE) body.setEnabled(false);
@@ -349,31 +445,30 @@ class RebuiltRuntime implements GameRuntime {
   }
 
   private spawnFuel(): void {
-    const sp = 6.15;
-    // NEUTRAL ZONE: 360 FUEL in a 12 x 30 block on the center line.
+    const sp = 6.1 * IN;
+    // NEUTRAL ZONE: 360 FUEL staged in a block on the center line.
     for (let i = 0; i < 12; i++) for (let j = 0; j < 30; j++) {
-      this.addFuel((i - 5.5) * sp * IN, FUEL_R + 0.002, (j - 14.5) * sp * IN, LOOSE);
+      this.addFuel((i - 5.5) * sp, FUEL_R + 0.002, (j - 14.5) * sp, LOOSE);
     }
-    // DEPOTS: 24 each.
     for (const a of ['red', 'blue'] as const) {
+      // DEPOT: 24 FUEL (4 deep x 6 wide).
       for (let i = 0; i < 4; i++) for (let j = 0; j < 6; j++) {
-        const [x, z] = side(a, -HL + 4 + i * sp, DEPOT_Z - 15.4 + j * sp);
+        const [x, z] = P(a, 3.5 * IN + i * sp, DEPOT.lat - 2.5 * sp + j * sp);
         this.addFuel(x, FUEL_R + 0.002, z, LOOSE);
       }
-      // OUTPOSTS: 24 each, held by the human player.
+      // OUTPOST: 24 FUEL with the human player.
       for (let k = 0; k < REBUILT.outpostFuel; k++) {
-        const [x, z] = side(a, -HL - 20, OUTPOST_Z + (k % 6) * 3);
-        this.addFuel(x, 0.5 + Math.floor(k / 6) * 0.2, z, RESERVE);
+        const [x, z] = P(a, -0.5, OUTPOST.lat + ((k % 6) - 2.5) * 0.16);
+        this.addFuel(x, 0.4 + Math.floor(k / 6) * 0.17, z, RESERVE);
         this.outpostQueue[a].push(this.bodies.length - 1);
       }
     }
-    // Preload.
     for (let k = 0; k < REBUILT.maxPreload; k++) {
       this.addFuel(this.ctx.robot.x, 0.3, this.ctx.robot.z, HELD);
       this.held.push(this.bodies.length - 1);
     }
     const geo = new THREE.IcosahedronGeometry(FUEL_R, 2);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xf2d21b, roughness: 0.75 });
+    const mat = new THREE.MeshStandardMaterial({ color: 0xf2d21b, roughness: 0.8 });
     this.fuelMesh = new THREE.InstancedMesh(geo, mat, this.bodies.length);
     this.fuelMesh.castShadow = this.ctx.settings.quality === 'high';
     this.fuelMesh.receiveShadow = true;
@@ -386,85 +481,145 @@ class RebuiltRuntime implements GameRuntime {
     return (this.ctx.clock.phase?.id as RebuiltPhaseId) ?? 'free';
   }
 
+  private timedHubs(): boolean {
+    return this.ctx.mode === 'match' || this.ctx.mode === 'driver';
+  }
+
   isHubActive(a: Alliance = this.me): boolean {
-    if (this.ctx.mode !== 'match' && this.ctx.mode !== 'driver') return true;
+    if (!this.timedHubs()) return true;
     return hubActive(a, this.phaseId(), this.autoWinner);
   }
 
   update(dt: number, ctl: ControlState): void {
     const r = this.ctx.robot;
     const enabled = this.ctx.clock.enabled;
+    const anim = r.anim;
+    this.time += dt;
     this.shootCooldown -= dt;
     this.intakeCooldown -= dt;
     this.feedCooldown -= dt;
-    r.intakeSpin = enabled && ctl.intake && this.climb === 0 ? 1 : 0;
+    for (const a of ['red', 'blue'] as const) if (this.isHubActive(a)) this.lastActive[a] = this.time;
 
-    // Intake.
-    if (enabled && ctl.intake && this.climb === 0) {
+    const intaking = enabled && ctl.intake && this.climb === 0;
+    anim.intake = intaking ? 1 : enabled && ctl.outtake ? -1 : 0;
+    anim.intakeDeploy += THREE.MathUtils.clamp((intaking || (enabled && ctl.outtake) ? 1 : 0) - anim.intakeDeploy, -3 * dt, 3 * dt);
+
+    // Intake (once the intake is down).
+    if (intaking && anim.intakeDeploy > 0.6) {
       for (let i = 0; i < this.bodies.length && this.held.length < r.cfg.capacity; i++) {
         if (this.state[i] !== LOOSE || this.intakeCooldown > 0) continue;
         const t = this.bodies[i].translation();
-        if (r.inIntake(t.x, t.z, t.y, 0.28)) {
+        if (r.inIntake(t.x, t.z, t.y, 0.3)) {
           this.state[i] = HELD;
           this.bodies[i].setEnabled(false);
           this.held.push(i);
-          this.intakeCooldown = 1 / 14;
+          this.intakeCooldown = 1 / 20;
           this.ctx.intook();
         }
       }
     }
 
-    // Outtake: dump FUEL out the front.
-    if (enabled && ctl.outtake && this.held.length && this.shootCooldown <= 0) {
+    // Outtake: spit FUEL out over the intake.
+    if (enabled && ctl.outtake && this.held.length && this.shootCooldown <= 0 && anim.intakeDeploy > 0.6) {
       const i = this.held.pop()!;
-      const [x, z] = r.toWorld(r.cfg.length / 2 + 0.12, (Math.random() - 0.5) * 0.3);
+      const [x, z] = r.toWorld(r.cfg.length / 2 + 0.15, (Math.random() - 0.5) * 0.3);
       const [fx, fz] = [Math.cos(r.heading), -Math.sin(r.heading)];
-      this.launch(i, x, 0.2, z, r.cmd.vx + fx * 1.5, 0.5, r.cmd.vz + fz * 1.5);
-      this.shootCooldown = 0.06;
+      this.launch(i, x, 0.2, z, r.cmd.vx + fx * 1.8, 0.4, r.cmd.vz + fz * 1.8);
+      this.shootCooldown = 0.08;
     }
 
     // Shooter.
     const sh = r.cfg.shooter;
-    if (enabled && sh && ctl.score && this.held.length && this.shootCooldown <= 0 && this.climb === 0) {
-      const sol = this.solution();
-      if (sol) {
+    const sol = (this.sol = this.solution());
+    const assist = this.ctx.settings.aimAssist;
+    r.aimHeading = null;
+    if (sh && sol) {
+      anim.hood = sol.hood;
+      if (sh.turret) anim.turretYaw = wrapAngle(sol.yaw - r.heading);
+      // Full assist on a chassis-aimed robot: the robot turns itself to face (or back up to) the HUB.
+      if (assist === 'full' && !sh.turret && ctl.score && enabled) r.aimHeading = wrapAngle(sol.yaw - (sh.facing === 'back' ? Math.PI : 0));
+    }
+    anim.flywheel += ((enabled && ctl.score ? 1 : 0.25) - anim.flywheel) * Math.min(1, dt * 4);
+    if (enabled && sh && ctl.score && this.held.length && this.shootCooldown <= 0 && this.climb === 0 && sol?.ok) {
+      const aligned = r.aimHeading === null || Math.abs(wrapAngle(r.aimHeading - r.heading)) < deg(5);
+      if (aligned) {
         const i = this.held.pop()!;
-        this.launch(i, sol.x, sol.y, sol.z, sol.vx + (Math.random() - 0.5) * 0.12, sol.vy + (Math.random() - 0.5) * 0.12, sol.vz + (Math.random() - 0.5) * 0.12);
+        // Real shooters scatter a little: ~1.5% speed, ~0.8° direction.
+        const jitter = 1 + (Math.random() - 0.5) * 0.03;
+        const yawJ = (Math.random() - 0.5) * deg(1.6);
+        const c = Math.cos(yawJ);
+        const s = Math.sin(yawJ);
+        const vx = (sol.vx * c - sol.vz * s) * jitter;
+        const vz = (sol.vx * s + sol.vz * c) * jitter;
+        this.launch(i, sol.x, sol.y, sol.z, vx, sol.vy * jitter, vz);
         this.shootCooldown = 1 / sh.rate;
       }
     }
 
-    // Hub scoring: FUEL inside a hub below the rim is counted, then fed back to the neutral zone.
-    for (const a of ['red', 'blue'] as const) {
-      const [hx, hz] = side(a, HUB_X, 0);
-      const inner = (HUB / 2 - 2) * IN;
-      for (let i = 0; i < this.bodies.length; i++) {
-        if (this.state[i] !== LOOSE) continue;
-        const t = this.bodies[i].translation();
-        if (Math.abs(t.x - hx) < inner && Math.abs(t.z - hz) < inner && t.y < HUB_TOP * IN - 0.25 && t.y > 0.05) {
-          this.onHubScore(a);
-          const out = a === 'red' ? 1 : -1;
-          const ex = hx + out * (HUB / 2 + 6) * IN;
-          const ez = hz + (Math.random() - 0.5) * 0.8;
-          this.launch(i, ex, 0.15, ez, out * (1 + Math.random() * 1.5), 0.2, (Math.random() - 0.5) * 1.2);
-        }
-        if (t.y < -1) this.launch(i, 0, 0.3, 0, 0, 0, 0);
-      }
-    }
-
+    this.fuelPhysics(dt);
     this.updateClimb(dt, ctl);
+  }
+
+  /** Air drag, carpet rolling resistance, HUB scoring and the HUB's exit. */
+  private fuelPhysics(dt: number): void {
+    const inner = HUB.size / 2 - 3 * IN;
+    for (let i = 0; i < this.bodies.length; i++) {
+      if (this.state[i] !== LOOSE) continue;
+      const body = this.bodies[i];
+      if (body.isSleeping()) continue;
+      const t = body.translation();
+      const v = body.linvel();
+      const speed = Math.hypot(v.x, v.y, v.z);
+      if (t.y > FUEL_R + 0.03) {
+        if (speed > 0.5) {
+          const k = FUEL_DRAG_K * speed * dt;
+          body.setLinvel({ x: v.x - k * v.x, y: v.y - k * v.y, z: v.z - k * v.z }, true);
+        }
+      } else {
+        const hs = Math.hypot(v.x, v.z);
+        if (hs > 0.01) {
+          const f = Math.max(0, hs - ROLL_DECEL * dt) / hs;
+          body.setLinvel({ x: v.x * f, y: v.y, z: v.z * f }, true);
+        }
+      }
+      for (const a of ['red', 'blue'] as const) {
+        const [hx, hz] = this.hub[a];
+        if (Math.abs(t.x - hx) < inner && Math.abs(t.z - hz) < inner && t.y < HUB.rimFront - 0.15 && t.y > 0.3) {
+          this.onHubScore(a);
+          this.state[i] = IN_HUB;
+          body.setEnabled(false);
+          // FUEL drops through the funnel and rolls out of the exit in single file.
+          const last = this.hubQueue.filter((q) => q.a === a).reduce((m, q) => Math.max(m, q.at), this.time);
+          this.hubQueue.push({ i, a, at: Math.max(this.time + 0.7, last + 0.09) });
+        }
+      }
+      if (t.y < -1) this.launch(i, 0, 0.3, 0, 0, 0, 0);
+    }
+    if (this.hubQueue.length) {
+      const still: typeof this.hubQueue = [];
+      for (const q of this.hubQueue) {
+        if (q.at > this.time) {
+          still.push(q);
+          continue;
+        }
+        const [hx, hz] = this.hub[q.a];
+        const out = q.a === 'red' ? 1 : -1;
+        this.launch(q.i, hx + out * (HUB.size / 2 + FUEL_R + 0.03), HUB.exitY + FUEL_R + 0.01, hz + (Math.random() - 0.5) * (HUB.exitW - 0.2), out * (1.0 + Math.random() * 0.8), 0.1, (Math.random() - 0.5) * 0.6);
+      }
+      this.hubQueue = still;
+    }
   }
 
   private onHubScore(a: Alliance): void {
     if (a !== this.me) return;
-    const active = this.isHubActive(a);
-    const auto = this.ctx.clock.isAuto;
+    // FUEL is still assessed for up to 3 s after the HUB deactivates.
+    const active = this.isHubActive(a) || this.time - this.lastActive[a] <= SCORE_GRACE;
     if (!active) {
       this.tally.inactiveFuel++;
       this.ctx.toast('HUB inactive: 0 pts', 'bad');
       return;
     }
-    if (auto) this.tally.autoFuel++;
+    if (this.ctx.clock.isAuto) this.tally.autoFuel++;
     else this.tally.teleopFuel++;
     this.totalScored++;
     this.ctx.scored(1);
@@ -479,59 +634,45 @@ class RebuiltRuntime implements GameRuntime {
     body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** Current shot: muzzle position and launch velocity, depending on the aim assist. */
-  private solution(): { x: number; y: number; z: number; vx: number; vy: number; vz: number } | null {
+  /** The shot the shooter would take right now, given the aim assist. */
+  private solution(): ShotSolution | null {
     const r = this.ctx.robot;
     const sh = r.cfg.shooter;
     if (!sh) return null;
     const assist = this.ctx.settings.aimAssist;
-    const [mx, mz] = r.toWorld(-0.05, 0);
-    const my = r.mesh.position.y + r.cfg.height + 0.1;
-    const [hx, hz] = this.hubPos;
+    const back = !sh.turret && sh.facing === 'back';
+    // Muzzle: over the drum at the back, or at the turret.
+    const [mx, mz] = r.toWorld(back ? -r.cfg.length / 2 + 0.12 : -0.05, 0);
+    const my = r.mesh.position.y + sh.height;
+    const [hx, hz] = this.hub[this.me];
     const dx = hx - mx;
     const dz = hz - mz;
     const dist = Math.hypot(dx, dz);
-    const dy = HUB_TOP * IN + 0.25 - my;
-    const heading: [number, number] = [Math.cos(r.heading), -Math.sin(r.heading)];
+    const toHub = Math.atan2(-dz, dx);
+    const chassisYaw = wrapAngle(r.heading + (back ? Math.PI : 0));
+    const vel = (yaw: number, speed: number, angle: number, inherit: boolean) => ({
+      vx: Math.cos(yaw) * Math.cos(angle) * speed + (inherit ? r.cmd.vx : 0),
+      vy: Math.sin(angle) * speed,
+      vz: -Math.sin(yaw) * Math.cos(angle) * speed + (inherit ? r.cmd.vz : 0),
+    });
 
     if (assist === 'manual') {
-      const v = this.manualSpeed;
-      const c = Math.cos(sh.angle);
-      return {
-        x: mx, y: my, z: mz,
-        vx: heading[0] * v * c + r.cmd.vx,
-        vy: v * Math.sin(sh.angle),
-        vz: heading[1] * v * c + r.cmd.vz,
-      };
+      return { x: mx, y: my, z: mz, ...vel(chassisYaw, this.manualSpeed, sh.angle, true), yaw: chassisYaw, hood: sh.angle, ok: true };
     }
-    // Pick the flattest angle that still drops into the opening on the way down.
-    let best: { v: number; a: number } | null = null;
-    for (let a = 75; a >= 40; a -= 1) {
-      const ang = deg(a);
-      const v = launchSpeedFor(dist, dy, ang);
-      if (!v || v > 15) continue;
-      const tHit = dist / (v * Math.cos(ang));
-      const vyHit = v * Math.sin(ang) - 9.81 * tHit;
-      if (vyHit < -1.5) {
-        best = { v, a: ang };
-        if (Math.abs(a - (sh.angle * 180) / Math.PI) < 1) break;
-      }
-    }
-    if (!best) return null;
-    const c = Math.cos(best.a);
+    const shot = solveShot(dist, HUB.aimY - my, sh.hoodMin, sh.hoodMax, sh.speedMax);
+    if (!shot) return { x: mx, y: my, z: mz, ...vel(chassisYaw, sh.speedMax * 0.6, sh.angle, true), yaw: chassisYaw, hood: sh.angle, ok: false };
     if (assist === 'full') {
-      // Turret aims and the shooter compensates for robot motion.
-      const ux = dx / dist;
-      const uz = dz / dist;
-      return { x: mx, y: my, z: mz, vx: ux * best.v * c, vy: best.v * Math.sin(best.a), vz: uz * best.v * c };
+      // Shoot-on-the-move: lead the target by the robot's velocity over the flight time.
+      const lx = hx - r.cmd.vx * shot.time;
+      const lz = hz - r.cmd.vz * shot.time;
+      const d2 = Math.hypot(lx - mx, lz - mz);
+      const shot2 = solveShot(d2, HUB.aimY - my, sh.hoodMin, sh.hoodMax, sh.speedMax) ?? shot;
+      const yaw = Math.atan2(-(lz - mz), lx - mx);
+      return { x: mx, y: my, z: mz, ...vel(yaw, shot2.speed, shot2.angle, true), yaw, hood: shot2.angle, ok: true };
     }
-    // 'distance': correct speed, but the driver aims the robot; FUEL inherits robot velocity.
-    return {
-      x: mx, y: my, z: mz,
-      vx: heading[0] * best.v * c + r.cmd.vx,
-      vy: best.v * Math.sin(best.a),
-      vz: heading[1] * best.v * c + r.cmd.vz,
-    };
+    // 'distance': hood and speed are set from the distance, the driver points the shooter.
+    void toHub;
+    return { x: mx, y: my, z: mz, ...vel(chassisYaw, shot.speed, shot.angle, true), yaw: chassisYaw, hood: shot.angle, ok: true };
   }
 
   private updateClimb(dt: number, ctl: ControlState): void {
@@ -539,7 +680,7 @@ class RebuiltRuntime implements GameRuntime {
     const ph = this.ctx.clock.phase;
     const untimed = this.ctx.clock.untimed;
     const allowed = untimed || ph?.kind === 'auto' || ph?.kind === 'endgame';
-    const cap = ph?.kind === 'auto' ? 1 : (r.cfg.maxClimb ?? 0);
+    const cap = ph?.kind === 'auto' ? Math.min(1, r.cfg.maxClimb ?? 0) : (r.cfg.maxClimb ?? 0);
     const climbTime = r.cfg.climbTime ?? 2;
 
     if (this.descending) {
@@ -547,12 +688,15 @@ class RebuiltRuntime implements GameRuntime {
       if (this.climb === 0) this.descending = false;
     } else if (ctl.climb && this.ctx.clock.enabled) {
       if (this.climb === 0) {
+        if (cap === 0) {
+          if (this.inClimbZone()) this.ctx.toast('This robot has no climber', 'info');
+          return;
+        }
         if (!this.inClimbZone()) return;
         if (!allowed) {
           this.ctx.toast('Climb during AUTO (L1) or END GAME', 'info');
           return;
         }
-        if (cap === 0) return;
         this.ctx.toast('Climbing… hold to go higher', 'info');
       }
       const before = Math.floor(this.climb + 1e-6);
@@ -564,17 +708,20 @@ class RebuiltRuntime implements GameRuntime {
       }
     }
     r.frozen = this.climb > 0;
-    const rungLift = (lvl: number) => (lvl <= 0 ? 0 : Math.max(0.12, RUNGS[lvl - 1] * IN - 0.45));
+    const rungLift = (lvl: number) => (lvl <= 0 ? 0 : Math.max(0.1, TOWER.rungs[lvl - 1] - 0.5));
     const lo = Math.floor(this.climb);
     const frac = this.climb - lo;
     r.lift = rungLift(lo) + (rungLift(Math.min(3, lo + 1)) - rungLift(lo)) * frac;
+    r.anim.climb = Math.min(0.5, this.climb * 0.25 + (ctl.climb && this.inClimbZone() ? 0.15 : 0));
   }
 
+  /** Bumpers up against the rungs, centered on the TOWER. */
   private inClimbZone(): boolean {
     const r = this.ctx.robot;
-    const [tx, tz] = side(this.me, -HL + TOWER_X_OFF, TOWER_Z);
+    const [tx, tz] = P(this.me, TOWER_UPRIGHT_D, TOWER.lat);
     const along = Math.abs(r.x - tx);
-    return along < r.cfg.length / 2 + 0.45 && Math.abs(r.z - tz) < (TOWER_SPAN / 2) * IN;
+    const halfDepth = Math.max(r.cfg.length, r.cfg.width) / 2;
+    return along < halfDepth + 0.4 && along > 0.1 && Math.abs(r.z - tz) < 0.5;
   }
 
   private decideAutoWinner(myAuto: number): Alliance | null {
@@ -589,7 +736,7 @@ class RebuiltRuntime implements GameRuntime {
   }
 
   onAction(a: Action): void {
-    if (a === 'shooterUp') this.manualSpeed = Math.min(16, this.manualSpeed + 0.25);
+    if (a === 'shooterUp') this.manualSpeed = Math.min(18, this.manualSpeed + 0.25);
     if (a === 'shooterDown') this.manualSpeed = Math.max(3, this.manualSpeed - 0.25);
     if ((a === 'shooterUp' || a === 'shooterDown') && this.ctx.settings.aimAssist === 'manual') {
       this.ctx.toast(`Shooter ${this.manualSpeed.toFixed(2)} m/s`, 'info');
@@ -598,6 +745,7 @@ class RebuiltRuntime implements GameRuntime {
     if (a === 'feed') this.humanPlayerFeed();
   }
 
+  /** The human player rolls FUEL down the CHUTE into the OUTPOST corral. */
   private humanPlayerFeed(): void {
     if (this.feedCooldown > 0) return;
     const q = this.outpostQueue[this.me];
@@ -606,10 +754,10 @@ class RebuiltRuntime implements GameRuntime {
       return;
     }
     const i = q.shift()!;
-    const s = this.me === 'red' ? 1 : -1;
-    const [x, z] = side(this.me, -HL + 4, OUTPOST_Z + (Math.random() - 0.5) * 8);
-    this.launch(i, x, 0.55, z, s * (1.6 + Math.random() * 0.4), 0.3, (Math.random() - 0.5) * 0.3);
-    this.feedCooldown = 0.3;
+    const out = this.me === 'red' ? 1 : -1;
+    const [x, z] = P(this.me, 0.06, OUTPOST.lat + (Math.random() - 0.5) * (OUTPOST.chuteW - 0.2));
+    this.launch(i, x, OUTPOST.chuteY + FUEL_R, z, out * (1.4 + Math.random() * 0.5), 0.2, (Math.random() - 0.5) * 0.3);
+    this.feedCooldown = 0.25;
   }
 
   onPhaseChange(prev: Phase | null, next: Phase | null): void {
@@ -619,44 +767,35 @@ class RebuiltRuntime implements GameRuntime {
       const won = this.autoWinner === this.me;
       this.ctx.toast(won ? 'You won AUTO: your HUB is off in SHIFTS 1 & 3' : 'Opponent won AUTO: your HUB is off in SHIFTS 2 & 4', 'info');
     }
-    if (next && prev && (this.ctx.mode === 'match' || this.ctx.mode === 'driver')) {
+    if (next && prev && this.timedHubs()) {
       const was = hubActive(this.me, prev.id as RebuiltPhaseId, this.autoWinner);
       const now = hubActive(this.me, next.id as RebuiltPhaseId, this.autoWinner);
       if (was !== now) this.ctx.toast(now ? 'YOUR HUB IS ACTIVE' : 'HUB INACTIVE: collect FUEL', now ? 'good' : 'bad');
     }
   }
 
-  /** Seconds until this alliance's hub changes state, or null if it won't. */
   private nextHubChange(): { seconds: number; active: boolean } | null {
     const clock = this.ctx.clock;
-    if (clock.untimed || (this.ctx.mode !== 'match' && this.ctx.mode !== 'driver')) return null;
+    if (clock.untimed || !this.timedHubs()) return null;
     const cur = this.isHubActive();
     let t = 0;
     for (const p of clock.phases) {
       const start = t;
       t += p.duration;
-      if (start <= clock.elapsed) continue;
-      if (p.kind === 'break') continue;
+      if (start <= clock.elapsed || p.kind === 'break') continue;
       const act = hubActive(this.me, p.id as RebuiltPhaseId, this.autoWinner);
       if (act !== cur) return { seconds: start - clock.elapsed, active: act };
     }
     return null;
   }
 
-  liveScore(): { mine: number; other: number; lines: ScoreLine[] } {
-    const s = scoreRebuilt({ ...this.tally, endTower: this.currentLevel() as TowerLevel });
-    return {
-      mine: s.total,
-      other: 0,
-      lines: [
-        { label: 'FUEL', value: s.fuelPoints },
-        { label: 'TOWER', value: s.towerPoints },
-      ],
-    };
-  }
-
   private currentLevel(): TowerLevel {
     return Math.floor(this.climb + 1e-6) as TowerLevel;
+  }
+
+  liveScore(): { mine: number; other: number; lines: ScoreLine[] } {
+    const s = scoreRebuilt({ ...this.tally, endTower: this.currentLevel() });
+    return { mine: s.total, other: 0, lines: [{ label: 'FUEL', value: s.fuelPoints }, { label: 'TOWER', value: s.towerPoints }] };
   }
 
   statusHtml(): string {
@@ -665,21 +804,22 @@ class RebuiltRuntime implements GameRuntime {
     const warn = next && next.seconds <= 5 && !next.active;
     const hub = `<span class="chip big ${warn ? 'blink' : ''}" style="--c:${active ? 'var(--good)' : 'var(--bad)'}">HUB ${active ? 'ACTIVE' : 'INACTIVE'}</span>`;
     const nextTxt = next ? `<span class="hint">${next.active ? 'on' : 'off'} in ${Math.ceil(next.seconds)}s</span>` : '';
+    const sh = this.ctx.robot.cfg.shooter;
     const assist = this.ctx.settings.aimAssist;
-    const aim =
-      assist === 'manual'
-        ? `Manual · ${this.manualSpeed.toFixed(1)} m/s <span class="hint">[ ] / D-pad</span>`
-        : assist === 'full'
-          ? 'Full auto-aim'
-          : 'Auto speed · you aim';
-    const shot = this.trajGood ? '<b style="color:var(--good)">ON TARGET</b>' : '<span style="color:var(--muted)">off target</span>';
+    const aim = assist === 'manual'
+      ? `Manual · ${this.manualSpeed.toFixed(1)} m/s <span class="hint">[ ] / D-pad</span>`
+      : assist === 'full'
+        ? sh?.turret ? 'Turret auto-aim + lead' : 'Auto-align robot + lead'
+        : sh?.turret ? 'Auto hood · turret locked' : `Auto hood · aim the ${sh?.facing === 'back' ? 'BACK' : 'front'}`;
+    const shot = this.trajGood ? '<b style="color:var(--good)">ON TARGET</b>' : this.sol && !this.sol.ok ? '<span style="color:var(--bad)">out of range</span>' : '<span style="color:var(--muted)">off target</span>';
     const lvl = this.currentLevel();
+    const cfg = this.ctx.robot.cfg;
     return `
       <div class="row">${hub}${nextTxt}</div>
       <div class="row"><span class="lbl">Shooter</span>${aim}</div>
       <div class="row"><span class="lbl">Shot</span>${shot}</div>
-      <div class="row"><span class="lbl">Tower</span><b>${lvl ? `L${lvl}` : this.inClimbZone() ? '<span style="color:var(--good)">in zone: hold T / A</span>' : '—'}</b></div>
-      <div class="row"><span class="lbl">Outpost</span><b>${this.outpostQueue[this.me].length}</b> <span class="hint">B to feed</span></div>`;
+      <div class="row"><span class="lbl">Tower</span><b>${lvl ? `L${lvl}` : (cfg.maxClimb ?? 0) === 0 ? '<span style="color:var(--muted)">no climber</span>' : this.inClimbZone() ? '<span style="color:var(--good)">in zone: hold T / A</span>' : '—'}</b></div>
+      <div class="row"><span class="lbl">Outpost</span><b>${this.outpostQueue[this.me].length}</b> <span class="hint">B: human player</span></div>`;
   }
 
   cargoHtml(): string {
@@ -703,46 +843,44 @@ class RebuiltRuntime implements GameRuntime {
       }
     }
     this.fuelMesh.instanceMatrix.needsUpdate = true;
-
-    // Hub lights: lit when active, blinking just before turning off.
-    const t = performance.now() / 1000;
+    const tt = performance.now() / 1000;
     for (const a of ['red', 'blue'] as const) {
-      let on = this.ctx.mode === 'match' || this.ctx.mode === 'driver' ? hubActive(a, this.phaseId(), this.autoWinner) : true;
+      let on = this.timedHubs() ? hubActive(a, this.phaseId(), this.autoWinner) : true;
       if (a === this.me) {
         const next = this.nextHubChange();
-        if (on && next && !next.active && next.seconds < 3) on = Math.sin(t * 18) > 0;
+        if (on && next && !next.active && next.seconds < 3) on = Math.sin(tt * 18) > 0;
       }
-      for (const m of this.hubLights[a]) {
-        const mat = m.material as THREE.MeshStandardMaterial;
-        mat.emissiveIntensity = on ? 1.1 : 0.05;
-      }
+      for (const m of this.hubLights[a]) (m.material as THREE.MeshStandardMaterial).emissiveIntensity = on ? 1.2 : 0.04;
     }
     this.updateTrajectory();
   }
 
   private updateTrajectory(): void {
-    const show = this.ctx.settings.showTrajectory && this.held.length > 0 && this.climb === 0;
+    const sol = this.sol;
+    const show = this.ctx.settings.showTrajectory && this.held.length > 0 && this.climb === 0 && !!sol;
     this.trajLine.visible = show;
     this.trajGood = false;
-    const sol = this.solution();
-    if (!sol) {
-      this.trajLine.visible = false;
-      return;
-    }
-    const [hx, hz] = this.hubPos;
+    if (!sol) return;
+    const [hx, hz] = this.hub[this.me];
     const pos = this.trajLine.geometry.attributes.position as THREE.BufferAttribute;
     const n = pos.count;
-    const tMax = 2.2;
-    let lastY = sol.y;
-    for (let k = 0; k < n; k++) {
-      const tt = (k / (n - 1)) * tMax;
-      const x = sol.x + sol.vx * tt;
-      const y = sol.y + sol.vy * tt - 0.5 * 9.81 * tt * tt;
-      const z = sol.z + sol.vz * tt;
-      pos.setXYZ(k, x, Math.max(0, y), z);
-      if (lastY >= HUB_TOP * IN && y < HUB_TOP * IN && Math.hypot(x - hx, z - hz) < 0.48) this.trajGood = true;
-      lastY = y;
+    let { x, y, z, vx, vy, vz } = sol;
+    const dt = 1 / 60;
+    let k = 0;
+    for (let step = 0; step < 240 && k < n; step++) {
+      const sp = Math.hypot(vx, vy, vz);
+      vx -= FUEL_DRAG_K * sp * vx * dt;
+      vy -= (9.81 + FUEL_DRAG_K * sp * vy) * dt;
+      vz -= FUEL_DRAG_K * sp * vz * dt;
+      const ny = y + vy * dt;
+      if (y >= HUB.rimFront && ny < HUB.rimFront && Math.hypot(x - hx, z - hz) < HUB.hexR * 0.9) this.trajGood = true;
+      x += vx * dt;
+      y = ny;
+      z += vz * dt;
+      if (step % 4 === 0) pos.setXYZ(k++, x, Math.max(0, y), z);
+      if (y < 0) break;
     }
+    for (; k < n; k++) pos.setXYZ(k, x, Math.max(0, y), z);
     pos.needsUpdate = true;
     this.trajLine.computeLineDistances();
     (this.trajLine.material as THREE.LineDashedMaterial).color.setHex(this.trajGood ? 0x7dff8a : 0xff8a7d);
@@ -759,7 +897,7 @@ class RebuiltRuntime implements GameRuntime {
     if (this.ctx.mode === 'match') lines.push({ label: 'AUTO TOWER (L1) pts', value: towerPoints(this.tally.autoTower, true) });
     lines.push({ label: `END TOWER (L${this.tally.endTower}) pts`, value: towerPoints(this.tally.endTower, false) });
     const notes: string[] = [];
-    if (this.ctx.mode === 'match' || this.ctx.mode === 'driver') {
+    if (this.timedHubs()) {
       notes.push(
         `Ranking points (solo): ENERGIZED ${s.energizedRP ? '✔' : '✘'} (${REBUILT.rp.energizedFuel} FUEL), SUPERCHARGED ${s.superchargedRP ? '✔' : '✘'} (${REBUILT.rp.superchargedFuel}), TRAVERSAL ${s.traversalRP ? '✔' : '✘'} (${REBUILT.rp.traversalTowerPoints} TOWER pts).`,
       );
@@ -770,21 +908,20 @@ class RebuiltRuntime implements GameRuntime {
 
   footprints(): Footprint[] {
     const out: Footprint[] = [];
+    const rect = (a: Alliance, d: number, lat: number, dd: number, ll: number, color: string) => {
+      const [x, z] = P(a, d, lat);
+      out.push({ x, z, w: dd, d: ll, color });
+    };
     for (const a of ['red', 'blue'] as const) {
       const c = a === 'red' ? '#d92b2b' : '#1f5fd6';
-      const P = (x: number, z: number) => side(a, x, z);
-      const [hx, hz] = P(HUB_X, 0);
-      out.push({ x: hx, z: hz, w: HUB * IN, d: HUB * IN, color: c });
-      for (const zs of [1, -1]) {
-        const [bx, bz] = P(HUB_X, zs * (HUB / 2 + BUMP_W / 2));
-        out.push({ x: bx, z: bz, w: HUB * IN, d: BUMP_W * IN, color: 'rgba(240,196,25,0.45)' });
-        const [tx, tz] = P(HUB_X, zs * (HUB / 2 + BUMP_W + (HW - HUB / 2 - BUMP_W) / 2));
-        out.push({ x: tx, z: tz, w: HUB * IN, d: (HW - HUB / 2 - BUMP_W) * IN, color: 'rgba(120,120,140,0.35)' });
+      rect(a, HUB.d, 0, HUB.size, HUB.size, c);
+      for (const s of [1, -1]) {
+        rect(a, HUB.d, s * (HUB.size / 2 + (HW - TRENCH.width - HUB.size / 2) / 2), BUMP.depth, HW - TRENCH.width - HUB.size / 2, 'rgba(240,196,25,0.45)');
+        rect(a, HUB.d, s * (HW - TRENCH.width / 2), TRENCH.depth, TRENCH.width, 'rgba(120,120,140,0.4)');
       }
-      const [tx, tz] = P(-HL + TOWER_X_OFF / 2, TOWER_Z);
-      out.push({ x: tx, z: tz, w: TOWER_X_OFF * IN, d: TOWER_SPAN * IN, color: '#f0c419' });
-      const [dx, dz] = P(-HL + 13.5, DEPOT_Z);
-      out.push({ x: dx, z: dz, w: 27 * IN, d: 42 * IN, color: 'rgba(255,255,255,0.25)' });
+      rect(a, TOWER.baseD / 2, TOWER.lat, TOWER.baseD, TOWER.baseW, '#f0c419');
+      rect(a, DEPOT.depth / 2, DEPOT.lat, DEPOT.depth, DEPOT.width, 'rgba(255,255,255,0.25)');
+      rect(a, OUTPOST.corralD / 2, OUTPOST.lat, OUTPOST.corralD, OUTPOST.corralW, 'rgba(160,160,170,0.3)');
     }
     return out;
   }
@@ -797,15 +934,15 @@ class RebuiltRuntime implements GameRuntime {
 }
 
 function startPoses(alliance: Alliance): StartPose[] {
-  const x = HUB_NEAR - 20;
-  const raw: StartPose[] = [
-    { label: 'Trench side (left)', x, z: -125, heading: 0 },
-    { label: 'Center (facing HUB)', x, z: 0, heading: 0 },
-    { label: 'Trench side (right)', x, z: 125, heading: 0 },
+  const d = ZONE - 0.55; // bumpers on the ROBOT STARTING LINE
+  const lanes: [string, number][] = [
+    ['Left TRENCH lane', HW - TRENCH.width / 2],
+    ['Center (facing the HUB)', 0],
+    ['Right TRENCH lane', -(HW - TRENCH.width / 2)],
   ];
-  return raw.map((p) => {
-    const [wx, wz] = side(alliance, p.x, p.z);
-    return { ...p, x: wx, z: wz, heading: alliance === 'red' ? 0 : Math.PI };
+  return lanes.map(([label, lat]) => {
+    const [x, z] = P(alliance, d, lat);
+    return { label, x, z, heading: alliance === 'red' ? 0 : Math.PI };
   });
 }
 
@@ -837,9 +974,9 @@ export const RebuiltGame: GameDef = {
   name: 'REBUILT',
   program: 'FIRST Robotics Competition',
   season: '2026',
-  blurb: '54′ field. Shoot FUEL into your HUB while it is active, go over BUMPS or under TRENCHES, and climb the TOWER in END GAME.',
-  fieldX: HL * 2 * IN,
-  fieldZ: HW * 2 * IN,
+  blurb: '54′ field. Shoot FUEL into your HUB while it is active, go over BUMPS or under TRENCHES, and climb the TOWER. Drive real 2026 robots like 2910, 4414 and 1678.',
+  fieldX: FIELD_L,
+  fieldZ: FIELD_W,
   presets: PRESETS,
   modes: [
     { id: 'match', label: 'Full match', description: '0:20 AUTO (drive it to rehearse) + 2:20 TELEOP with alternating HUB shifts and a 0:30 END GAME.' },
@@ -849,14 +986,14 @@ export const RebuiltGame: GameDef = {
     { id: 'free', label: 'Free practice', description: 'No clock. HUB always active.' },
   ],
   stations: (['red', 'blue'] as const).flatMap((a) =>
-    [1, 2, 3].map((n) => {
-      const [ex, ez] = side(a, -HL - 72, (n - 2) * 72);
-      const [tx, tz] = side(a, -40, (n - 2) * 20);
+    DRIVER_LAT.map((lat, n) => {
+      const [ex, ez] = P(a, -0.65, lat);
+      const [tx, tz] = P(a, HL * 0.95, lat * 0.25);
       return {
-        id: `${a}-${n}`,
-        label: `${a === 'red' ? 'Red' : 'Blue'} ${n}`,
+        id: `${a}-${n + 1}`,
+        label: `${a === 'red' ? 'Red' : 'Blue'} ${n + 1}`,
         alliance: a,
-        eye: [ex, 2.6, ez] as [number, number, number],
+        eye: [ex, 1.8, ez] as [number, number, number],
         target: [tx, 0, tz] as [number, number, number],
         yaw: a === 'red' ? 0 : Math.PI,
       };
@@ -865,26 +1002,30 @@ export const RebuiltGame: GameDef = {
   startPoses,
   phases,
   gates(): Gate[] {
-    const g = (x: number, z: number, yaw: number, w: number): Gate => ({ x: x * IN, z: z * IN, yaw, width: w * IN });
-    const trenchZ = HUB / 2 + BUMP_W + (HW - HUB / 2 - BUMP_W) / 2;
-    const bumpZ = HUB / 2 + BUMP_W / 2;
-    // One lap: out under the near TRENCH, over the far BUMP, around the far alliance zone,
-    // back under the other far TRENCH and over your own BUMP to finish at home.
+    // A lap: under your left TRENCH, along the field, over the far BUMP, round the far
+    // alliance zone, back under the far right TRENCH and over your own BUMP home.
+    const trenchLat = HW - TRENCH.width / 2;
+    const bumpLat = HUB.size / 2 + (HW - TRENCH.width - HUB.size / 2) / 2;
+    const g = (d: number, lat: number, along: boolean, w: number): Gate => {
+      const [x, z] = P('red', d, lat);
+      return { x, z, yaw: along ? Math.PI / 2 : 0, width: w };
+    };
     return [
-      g(HUB_X, trenchZ, Math.PI / 2, 56),
-      g(0, trenchZ, Math.PI / 2, 56),
-      g(-HUB_X, bumpZ, Math.PI / 2, 66),
-      g(HL - 70, 0, 0, 90),
-      g(-HUB_X, -trenchZ, Math.PI / 2, 56),
-      g(0, -trenchZ, Math.PI / 2, 56),
-      g(HUB_X, -bumpZ, Math.PI / 2, 66),
-      g(-HL + 70, 0, 0, 90),
+      g(HUB.d, trenchLat, true, 1.2),
+      g(HL, trenchLat, true, 1.2),
+      g(FIELD_L - HUB.d, bumpLat, true, 1.4),
+      g(FIELD_L - 1.8, 0, false, 2.0),
+      g(FIELD_L - HUB.d, -trenchLat, true, 1.2),
+      g(HL, -trenchLat, true, 1.2),
+      g(HUB.d, -bumpLat, true, 1.4),
+      g(1.8, 0, false, 2.0),
     ];
   },
   sprint: { count: 40, label: 'FUEL scored' },
   create: (ctx) => new RebuiltRuntime(ctx),
   notes: [
-    'Field size (317.7" × 651.2"), 158.6" alliance zones, 47" HUBs with a 72" opening, 6.5" BUMPS, 22.25" TRENCH clearance, TOWER rungs at 27/45/63", 504 FUEL (360 neutral, 24 per DEPOT, 24 per OUTPOST, 8 preload), match timing, HUB shift rules and point values come from the 2026 game manual and its summaries.',
-    'APPROXIMATIONS: the exact positions of the TOWER, DEPOT and OUTPOST along the alliance wall, BUMP ramp length, the shape of the HUB funnel, and how scored FUEL exits the HUB. The physics leaves out air drag. All the dimensions are constants at the top of src/games/rebuilt/game.ts.',
+    'From the 2026 game manual (Section 5, ARENA) and the official field CAD / AprilTag layout: the 651.2″×317.7″ field, 158.6″ alliance zones, 47″ HUBs with a sloped opening (72″ front rim, 80″ back rim), the exit in the HUB’s neutral face and the NET behind it, 73″×44.4″×6.5″ BUMPS, 65.65″ TRENCHES with 22.25″ clearance, the TOWER (rungs at 27/45/63″), DEPOT and OUTPOST positions, alliance wall heights and driver station positions, 504 FUEL (5.91″, 0.215 kg), match timing, HUB shifts (with the 3 s grace period) and point values.',
+    'Robots are modeled on the teams’ published 2026 specs and CAD (frame size, height, top speed, hopper size, shot rate, turret or fixed shooter, climber); capacities marked “estimated” weren’t published. FUEL flies with air drag and rolls with carpet resistance.',
+    'APPROXIMATIONS: the FUEL staging in the neutral zone, the inside of the HUB (FUEL is counted when it drops in and rolls out of the exit after ~0.7 s), and robot mechanisms simplified to buttons.',
   ],
 };

@@ -5,6 +5,7 @@ import { IN, FT } from '../../core/units';
 import type { Phase } from '../../core/match';
 import type { Action, ControlState } from '../../core/input';
 import type { RobotConfig, Alliance } from '../../robot/robot';
+import { vexModel } from '../../robot/models/vex';
 import type {
   Footprint,
   GameContext,
@@ -22,89 +23,120 @@ import {
   type PinColor,
   type Quadrant,
   type StackItem,
+  autoWinner,
   canPlace,
   isInMidfield,
   scoreOverride,
+  visibleHalves,
 } from './rules';
 
-const HALF = 6 * FT; // 72"
+// ------------------------------------------------------------------ field
+// Coordinates: meters, field center origin, +X toward the blue wall, +Z toward
+// the South wall (the top of the top-down view is North). Positions follow the
+// official field layout (VEXcode VR playground / field CAD).
+const HALF = 6 * FT; // 1.8288 m
 const WALL_H = 0.3;
-const COLORS: Record<PinColor, number> = { red: 0xd62f2f, blue: 0x2563d9, yellow: 0xf2c518 };
-const CSS: Record<PinColor, string> = { red: '#e04040', blue: '#3b7bf0', yellow: '#f2c518' };
 
-const PIN_R = 0.8 * IN;
-const PIN_H = 6.5 * IN;
-const CUP_R = 1.575 * IN;
-const CUP_H = 6.5 * IN;
+type GoalKind = 'alliance' | 'short' | 'tall';
+const GOAL_H: Record<GoalKind, number> = { tall: 0.2227, short: 0.1465, alliance: 0.0825 };
+const GOAL_R_BOTTOM = 0.077;
+const GOAL_R_TOP = 0.048;
 
-const QUADS: Quadrant[] = ['N', 'E', 'S', 'W'];
-/** Axis pointing from field center into each quadrant, and its perpendicular. */
-const AXIS: Record<Quadrant, { a: [number, number]; p: [number, number] }> = {
-  W: { a: [-1, 0], p: [0, -1] },
-  N: { a: [0, -1], p: [1, 0] },
-  E: { a: [1, 0], p: [0, 1] },
-  S: { a: [0, 1], p: [-1, 0] },
-};
-/** Alliance that owns the Alliance Goal in each quadrant (180° rotational symmetry). */
-const QUAD_ALLIANCE: Record<Quadrant, Alliance> = { W: 'red', S: 'red', E: 'blue', N: 'blue' };
+const GOALS: { id: string; kind: GoalKind; alliance?: Alliance; quadrant: Quadrant | null; x: number; z: number }[] = [
+  { id: 'center', kind: 'tall', quadrant: null, x: 0, z: 0 },
+  { id: 'N-short', kind: 'short', quadrant: 'N', x: -0.6, z: -1.2 },
+  { id: 'N-blue', kind: 'alliance', alliance: 'blue', quadrant: 'N', x: 0.6, z: -1.2 },
+  { id: 'E-blue', kind: 'alliance', alliance: 'blue', quadrant: 'E', x: 1.2, z: -0.6 },
+  { id: 'E-short', kind: 'short', quadrant: 'E', x: 1.2, z: 0.6 },
+  { id: 'S-short', kind: 'short', quadrant: 'S', x: 0.6, z: 1.2 },
+  { id: 'S-red', kind: 'alliance', alliance: 'red', quadrant: 'S', x: -0.6, z: 1.2 },
+  { id: 'W-red', kind: 'alliance', alliance: 'red', quadrant: 'W', x: -1.2, z: 0.6 },
+  { id: 'W-short', kind: 'short', quadrant: 'W', x: -1.2, z: -0.6 },
+];
+const TOGGLES: { q: Quadrant; x: number; z: number; alongX: boolean; n: [number, number] }[] = [
+  { q: 'N', x: 0, z: -1.78, alongX: true, n: [0, 1] },
+  { q: 'E', x: 1.78, z: 0, alongX: false, n: [-1, 0] },
+  { q: 'S', x: 0, z: 1.78, alongX: true, n: [0, -1] },
+  { q: 'W', x: -1.78, z: 0, alongX: false, n: [1, 0] },
+];
+const TOGGLE_LEN = 0.656;
+const LOADERS: { alliance: Alliance; x: number; z: number }[] = [
+  { alliance: 'red', x: -1.74, z: -1.49 },
+  { alliance: 'red', x: -1.74, z: 1.49 },
+  { alliance: 'blue', x: 1.74, z: -1.49 },
+  { alliance: 'blue', x: 1.74, z: 1.49 },
+];
 
-/** Quadrant-local inches -> world meters. */
-function q2w(q: Quadrant, along: number, perp: number): [number, number] {
-  const { a, p } = AXIS[q];
-  return [(a[0] * along + p[0] * perp) * IN, (a[1] * along + p[1] * perp) * IN];
-}
+// ----------------------------------------------------------- game pieces
+const PIN_LEN = 0.165;
+const PIN_R = 0.0464; // hexagon circumradius
+const PIN_CONE = 0.0907;
+const PIN_TIP_R = 0.021;
+const CUP_H = 0.1645;
+const COLORS: Record<PinColor, number> = { red: 0xbf2a1f, blue: 0x1f3fc7, yellow: 0xebbd19 };
+const CSS: Record<PinColor, string> = { red: '#e04040', blue: '#3b6ff0', yellow: '#f2c518' };
 
-const GOAL_HEIGHT = { alliance: 3.25 * IN, short: 5.8 * IN, tall: 8.7 * IN };
-const GOAL_RADIUS = { alliance: 2.2 * IN, short: 2.2 * IN, tall: 3 * IN };
-
+// ----------------------------------------------------------------- robots
 const PRESETS: RobotConfig[] = [
   {
-    id: 'vex-tank-450',
-    name: '450 RPM tank (18")',
-    description: 'Six-motor 3.25" drive. The all-round competition standard.',
-    length: 18 * IN, width: 18 * IN, height: 14 * IN,
+    id: 'vex-dr4b',
+    name: 'DR4B claw stacker',
+    description: 'Six-motor 450 RPM drive with a double-reverse four-bar lift and a rotating claw. Reaches the top of tall stacks.',
+    source: 'Inspired by early-season Override reveals (standoff-linkage DR4B claw bots, e.g. 8059A/8059Y).',
+    length: 15 * IN, width: 15 * IN, height: 14 * IN,
     drive: 'tank',
-    params: { maxSpeed: 1.95, maxAccel: 5.5, maxDecel: 8, maxTurnRate: 6.5, maxTurnAccel: 30, trackWidth: 0.3 },
-    capacity: 3, intakeWidth: 0.3, intakeReach: 0.09, style: 'vex',
+    params: { maxSpeed: 1.95, maxAccel: 5.2, maxDecel: 8, maxTurnRate: 6.2, maxTurnAccel: 28, trackWidth: 0.33 },
+    capacity: 2, intakeWidth: 0.2, intakeReach: 0.12, liftTime: 0.9, style: 'vex',
+    stats: { Drive: '6× 11W, 450 RPM, 3.25" omni/traction', Lift: 'DR4B to ~42"', Holds: 'claw + 1 in the tray' },
+    model: vexModel({ team: '2026A', length: 15, width: 15, drive: 'tank6', wheel: 3.25, cartridge: 'blue', lift: 'dr4b', liftMin: 3, liftMax: 42, rollers: true, accent: 0xe8862a }),
   },
   {
-    id: 'vex-tank-600',
-    name: '600 RPM speed tank (15")',
-    description: 'Fast and twitchy. Rewards smooth throttle control.',
+    id: 'vex-flex',
+    name: 'Clawbot "Flex"',
+    description: 'Four-motor drive, single arm and claw, like VEX’s Override Hero Bot. Slower, simple and reliable. A great first robot.',
+    source: 'Based on VEX’s official Override Hero Bot, Flex (arm + claw).',
+    length: 16 * IN, width: 14 * IN, height: 13 * IN,
+    drive: 'arcade',
+    params: { maxSpeed: 1.3, maxAccel: 4.5, maxDecel: 7, maxTurnRate: 4.8, maxTurnAccel: 22, trackWidth: 0.3 },
+    capacity: 1, intakeWidth: 0.16, intakeReach: 0.13, liftTime: 1.1, style: 'vex',
+    stats: { Drive: '4× 11W, 200 RPM, 4" omni', Lift: 'Single arm to ~26"', Holds: '1 in the claw' },
+    model: vexModel({ team: '2026B', length: 16, width: 14, drive: 'tank4', wheel: 4, cartridge: 'green', lift: 'arm', liftMin: 2, liftMax: 26, rollers: false, accent: 0x2e9be6 }),
+  },
+  {
+    id: 'vex-chainbar',
+    name: 'Chain-bar + roller intake',
+    description: 'Fast 600 RPM drive. Rollers sweep Pins and Cups into a claw on a chain-bar that keeps them level.',
+    source: 'Forklift / chain-bar stacker concept from the Override design discussions.',
     length: 15 * IN, width: 15 * IN, height: 13 * IN,
-    drive: 'tank',
-    params: { maxSpeed: 2.5, maxAccel: 4.8, maxDecel: 7, maxTurnRate: 7.5, maxTurnAccel: 32, trackWidth: 0.27 },
-    capacity: 2, intakeWidth: 0.26, intakeReach: 0.08, style: 'vex',
+    drive: 'splitArcade',
+    params: { maxSpeed: 2.35, maxAccel: 4.8, maxDecel: 7.5, maxTurnRate: 7, maxTurnAccel: 30, trackWidth: 0.33 },
+    capacity: 2, intakeWidth: 0.26, intakeReach: 0.14, liftTime: 0.8, style: 'vex',
+    stats: { Drive: '6× 11W, 600 RPM, 2.75" wheels', Lift: 'Chain-bar to ~32"', Holds: 'claw + 1 in the rollers' },
+    model: vexModel({ team: '2026C', length: 15, width: 15, drive: 'tank6', wheel: 2.75, cartridge: 'blue', lift: 'chainbar', liftMin: 3, liftMax: 32, rollers: true, accent: 0x7b4fd6 }),
   },
   {
     id: 'vex-xdrive',
-    name: 'X-drive holonomic (15")',
-    description: 'Strafe in any direction. Try field-oriented control.',
-    length: 15 * IN, width: 15 * IN, height: 13 * IN,
+    name: 'X-drive arm bot',
+    description: 'Holonomic X-drive that strafes to line up on goals, with an arm and rotating claw. Try field-oriented control.',
+    source: 'Holonomic “S-bot” style seen in Override design threads.',
+    length: 16 * IN, width: 16 * IN, height: 13 * IN,
     drive: 'xdrive',
-    params: { maxSpeed: 1.7, maxAccel: 4.2, maxDecel: 6.5, maxTurnRate: 5.5, maxTurnAccel: 24, trackWidth: 0.3 },
-    capacity: 3, intakeWidth: 0.26, intakeReach: 0.08, style: 'vex',
-  },
-  {
-    id: 'vex-tank-333',
-    name: '333 RPM torque tank (18")',
-    description: 'Slower but pushes hard and turns precisely.',
-    length: 18 * IN, width: 18 * IN, height: 14 * IN,
-    drive: 'arcade',
-    params: { maxSpeed: 1.45, maxAccel: 6.5, maxDecel: 9, maxTurnRate: 4.8, maxTurnAccel: 26, trackWidth: 0.3 },
-    capacity: 4, intakeWidth: 0.32, intakeReach: 0.09, style: 'vex',
+    params: { maxSpeed: 1.75, maxAccel: 4.2, maxDecel: 6.5, maxTurnRate: 5.5, maxTurnAccel: 24, trackWidth: 0.34 },
+    capacity: 1, intakeWidth: 0.18, intakeReach: 0.13, liftTime: 1.0, style: 'vex',
+    stats: { Drive: '4× 11W, 600 RPM, 3.25" omni at 45°', Lift: 'Arm to ~30"', Holds: '1 in the claw' },
+    model: vexModel({ team: '2026X', length: 16, width: 16, drive: 'xdrive', wheel: 3.25, cartridge: 'blue', lift: 'arm', liftMin: 2, liftMax: 30, rollers: false, accent: 0x18b38a }),
   },
 ];
 
 interface Piece {
   id: number;
   kind: 'pin' | 'cup';
-  /** Pin halves: [first, second]. */
-  colors: [PinColor, PinColor];
+  /** Pin halves: tapered end, flat (prism) end. */
+  cone: PinColor;
+  prism: PinColor;
   body: RAPIER.RigidBody;
-  mesh: THREE.Object3D;
-  state: 'loose' | 'held' | 'placed' | 'reserve';
-  goal?: string;
+  mesh: THREE.Group;
+  state: 'loose' | 'held' | 'placed';
 }
 
 interface Goal extends GoalState {
@@ -115,261 +147,346 @@ interface Goal extends GoalState {
 
 interface ToggleViz {
   q: Quadrant;
-  mesh: THREE.Mesh;
   x: number;
   z: number;
-  /** Inward wall normal. */
   n: [number, number];
-  cooldown: number;
+  alongX: boolean;
+  group: THREE.Group;
+  angle: number;
+  owner: Alliance | null;
+  touched: boolean;
+}
+
+type PlaceJob = { goal: Goal; piece: Piece; t: number; duration: number; height: number };
+
+/** Hexagonal pin points for the convex collider (tip down, local origin at center). */
+function pinHullPoints(): Float32Array {
+  const pts: number[] = [];
+  const bottom = -PIN_LEN / 2;
+  const mid = bottom + PIN_CONE;
+  const top = PIN_LEN / 2;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    pts.push(Math.cos(a) * PIN_TIP_R, bottom, Math.sin(a) * PIN_TIP_R);
+    pts.push(Math.cos(a) * PIN_R, mid, Math.sin(a) * PIN_R);
+    pts.push(Math.cos(a) * PIN_R, top, Math.sin(a) * PIN_R);
+  }
+  return new Float32Array(pts);
 }
 
 class OverrideRuntime implements GameRuntime {
   private builder: FieldBuilder;
   private pieces: Piece[] = [];
   private goals: Goal[] = [];
-  private toggles: Record<Quadrant, Alliance | null> = { N: null, E: null, S: null, W: null };
-  private toggleViz: ToggleViz[] = [];
+  private toggles: ToggleViz[] = [];
   private held: Piece[] = [];
-  private orientation: 'alliance' | 'yellow' = 'alliance';
+  private cupOpaqueUp = true;
   private intakeCooldown = 0;
-  private placeCooldown = 0;
   private dropCooldown = 0;
   private prevScore = false;
+  private job: PlaceJob | null = null;
+  private wristTarget = 0;
   private autoBonus: Alliance | 'tie' | null = null;
-  private matchLoads = OVERRIDE.matchLoadCupsPerAlliance;
+  private loaderQueue: Record<Alliance, ('cup' | 'pin' | 'yy')[]>;
   private placedByMe = 0;
-  private midfieldRing!: THREE.Mesh;
+  private midfieldGlow!: THREE.Mesh;
   private readonly me: Alliance;
-  private pinGeo = new THREE.CylinderGeometry(PIN_R, PIN_R, PIN_H / 2, 20);
-  private cupGeo = new THREE.CylinderGeometry(CUP_R, CUP_R * 0.82, CUP_H, 24, 1, true);
-  private cupBase = new THREE.CircleGeometry(CUP_R * 0.82, 24);
-  private pinMats: Record<PinColor, THREE.Material>;
-  private cupMat: THREE.Material;
+  private geo: { cone: THREE.BufferGeometry; prism: THREE.BufferGeometry; cupLow: THREE.BufferGeometry; cupHigh: THREE.BufferGeometry };
+  private mats: { pin: Record<PinColor, THREE.Material>; cupOpaque: THREE.Material; cupClear: THREE.Material };
+  private pinHull = pinHullPoints();
 
   constructor(private ctx: GameContext) {
     this.me = ctx.robot.alliance;
     this.builder = new FieldBuilder(ctx.world, ctx.scene);
-    this.pinMats = {
-      red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.45 }),
-      blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.45 }),
-      yellow: new THREE.MeshStandardMaterial({ color: COLORS.yellow, roughness: 0.45 }),
+    // Shared geometry: hex cone + hex prism Pins, hourglass Cups.
+    const cone = new THREE.CylinderGeometry(PIN_R, PIN_TIP_R, PIN_CONE, 6);
+    cone.translate(0, -PIN_LEN / 2 + PIN_CONE / 2, 0);
+    const prism = new THREE.CylinderGeometry(PIN_R, PIN_R, PIN_LEN - PIN_CONE, 6);
+    prism.translate(0, -PIN_LEN / 2 + PIN_CONE + (PIN_LEN - PIN_CONE) / 2, 0);
+    const profile = [
+      [0.0399, 0], [0.037, 0.018], [0.0345, 0.035], [0.0315, 0.06], [0.031, 0.0822],
+      [0.032, 0.1], [0.0345, 0.125], [0.038, 0.15], [0.0401, 0.1645],
+    ].map(([r, y]) => new THREE.Vector2(r, y - CUP_H / 2));
+    const half = Math.ceil(profile.length / 2);
+    const cupLow = new THREE.LatheGeometry(profile.slice(0, half), 28);
+    const cupHigh = new THREE.LatheGeometry(profile.slice(half - 1), 28);
+    this.geo = { cone, prism, cupLow, cupHigh };
+    this.mats = {
+      pin: {
+        red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.45 }),
+        blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.45 }),
+        yellow: new THREE.MeshStandardMaterial({ color: COLORS.yellow, roughness: 0.45 }),
+      },
+      cupOpaque: new THREE.MeshStandardMaterial({ color: 0xb8b8bd, roughness: 0.4, side: THREE.DoubleSide }),
+      cupClear: new THREE.MeshStandardMaterial({ color: 0xdcebff, roughness: 0.08, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false }),
     };
-    this.cupMat = new THREE.MeshStandardMaterial({ color: 0xe9eef5, roughness: 0.25, metalness: 0.05, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
+    const loads = (a: Alliance): ('cup' | 'pin' | 'yy')[] => {
+      const q: ('cup' | 'pin' | 'yy')[] = [];
+      for (let i = 0; i < 10; i++) q.push('cup', 'pin');
+      q.push('yy');
+      void a;
+      return q;
+    };
+    this.loaderQueue = { red: loads('red'), blue: loads('blue') };
     this.buildField();
-    this.spawnPieces();
-    // Preload: one pin in the robot.
-    const preload = this.makePin(ctx.robot.x, 0.1, ctx.robot.z, [this.me, 'yellow']);
-    this.hold(preload);
+    this.spawnLayout();
+    // Preload: one alliance-color Pin in the claw.
+    const pre = this.makePin(ctx.robot.x, 0.3, ctx.robot.z, this.me === 'red' ? ['red', 'yellow'] : ['blue', 'yellow']);
+    this.hold(pre);
   }
 
-  // ---------------------------------------------------------------- field
+  // ------------------------------------------------------------ field build
   private buildField(): void {
     const b = this.builder;
     b.floor(HALF * 2, HALF * 2);
-    const tiles = canvasTexture(1536, 1536, (g, w, h) => {
-      g.fillStyle = '#5d6168';
+    const px = (v: number, w: number) => (v / (HALF * 2) + 0.5) * w;
+    const tiles = canvasTexture(2048, 2048, (g, w, h) => {
+      g.fillStyle = '#4f535a';
       g.fillRect(0, 0, w, h);
       const n = 6;
       const s = w / n;
       for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-        const shade = 92 + ((i + j) % 2) * 6 + Math.random() * 4;
-        g.fillStyle = `rgb(${shade},${shade + 3},${shade + 9})`;
-        g.fillRect(i * s + 2, j * s + 2, s - 4, s - 4);
-        // foam texture speckle
-        for (let k = 0; k < 500; k++) {
-          g.fillStyle = `rgba(255,255,255,${Math.random() * 0.04})`;
+        const base = 86 + Math.random() * 6;
+        g.fillStyle = `rgb(${base},${base + 2},${base + 7})`;
+        g.fillRect(i * s + 3, j * s + 3, s - 6, s - 6);
+        // Interlocking foam-tile edge teeth.
+        g.fillStyle = 'rgba(0,0,0,0.18)';
+        for (let k = 0; k < 10; k++) {
+          g.fillRect(i * s + (k + 0.25) * (s / 10), j * s, s / 20, 4);
+          g.fillRect(i * s, j * s + (k + 0.25) * (s / 10), 4, s / 20);
+        }
+        for (let k = 0; k < 700; k++) {
+          g.fillStyle = `rgba(255,255,255,${Math.random() * 0.035})`;
           g.fillRect(i * s + Math.random() * s, j * s + Math.random() * s, 2, 2);
         }
       }
-      const px = (v: number) => (v / (HALF * 2) + 0.5) * w;
-      g.strokeStyle = 'rgba(255,255,255,0.85)';
-      g.lineWidth = w * (2 * IN) / (HALF * 2);
-      // Quadrant diagonals.
-      g.globalAlpha = 0.55;
+      const tape = 2 * IN * (w / (HALF * 2));
+      g.strokeStyle = 'rgba(245,245,245,0.92)';
+      g.lineWidth = tape;
+      g.lineCap = 'butt';
+      // Corner-to-corner diagonals split the field into the four Quadrants.
       g.beginPath();
       g.moveTo(0, 0); g.lineTo(w, h);
       g.moveTo(w, 0); g.lineTo(0, h);
       g.stroke();
-      g.globalAlpha = 1;
-      // Midfield diamond.
-      const d = OVERRIDE.midfieldHalfDiagonalIn * IN;
+      // Midfield diamond with its center cross.
+      const d = OVERRIDE.midfieldHalfDiagonal;
       g.beginPath();
-      g.moveTo(px(-d), px(0)); g.lineTo(px(0), px(-d)); g.lineTo(px(d), px(0)); g.lineTo(px(0), px(d)); g.closePath();
+      g.moveTo(px(-d, w), px(0, h)); g.lineTo(px(0, w), px(-d, h)); g.lineTo(px(d, w), px(0, h)); g.lineTo(px(0, w), px(d, h)); g.closePath();
+      g.moveTo(px(-d, w), px(0, h)); g.lineTo(px(d, w), px(0, h));
+      g.moveTo(px(0, w), px(-d, h)); g.lineTo(px(0, w), px(d, h));
       g.stroke();
-      // Alliance station stripes.
-      g.fillStyle = 'rgba(217,43,43,0.85)';
-      g.fillRect(0, 0, w * 0.012, h);
-      g.fillStyle = 'rgba(31,95,214,0.85)';
-      g.fillRect(w * 0.988, 0, w * 0.012, h);
     });
     b.decal(tiles, HALF * 2, HALF * 2);
 
-    // Perimeter: steel base rail with clear polycarbonate above it.
+    // Perimeter: steel rails with clear polycarbonate panels, alliance-colored station side.
     const steel = b.mat(0xaab2bc, { metal: 0.8, rough: 0.35 });
-    const clear = b.mat(0xd8eaff, { opacity: 0.18, rough: 0.05 });
+    const clear = b.mat(0xd8eaff, { opacity: 0.16, rough: 0.05 });
     const t = 1 * IN;
-    for (const [cx, cz, w, d] of [
-      [0, -HALF - t / 2, HALF * 2 + 2 * t, t],
-      [0, HALF + t / 2, HALF * 2 + 2 * t, t],
-      [-HALF - t / 2, 0, t, HALF * 2],
-      [HALF + t / 2, 0, t, HALF * 2],
+    for (const [cx, cz, w, d, color] of [
+      [0, -HALF - t / 2, HALF * 2 + 2 * t, t, 0],
+      [0, HALF + t / 2, HALF * 2 + 2 * t, t, 0],
+      [-HALF - t / 2, 0, t, HALF * 2, 0xc62828],
+      [HALF + t / 2, 0, t, HALF * 2, 0x1f4fbf],
     ] as const) {
       b.box({ center: [cx, 0.035, cz], size: [w, 0.07, d], material: steel, collider: false });
       b.box({ center: [cx, 0.07 + (WALL_H - 0.07) / 2, cz], size: [w, WALL_H - 0.07, d], material: clear, shadow: false, collider: false });
+      if (color) b.box({ center: [cx, WALL_H + 0.006, cz], size: [w * 1.5, 0.012, d], color, collider: false });
       b.solid([cx, 0.5, cz], [w, 1, d]);
     }
-    // Corner posts.
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      b.box({ center: [sx * (HALF + t / 2), WALL_H / 2, sz * (HALF + t / 2)], size: [t * 1.5, WALL_H, t * 1.5], material: steel, collider: false });
+      b.box({ center: [sx * (HALF + t / 2), WALL_H / 2, sz * (HALF + t / 2)], size: [t * 1.6, WALL_H + 0.01, t * 1.6], material: steel, collider: false });
     }
 
-    // Goals.
-    const tall: Goal = { id: 'tall', kind: 'tall', quadrant: null, stack: [], x: 0, z: 0, pieces: [] };
-    this.goals.push(tall);
-    for (const q of QUADS) {
-      const [ax, az] = q2w(q, 36, -16);
-      const [sx, sz] = q2w(q, 36, 16);
-      this.goals.push({ id: `${q}-alliance`, kind: 'alliance', alliance: QUAD_ALLIANCE[q], quadrant: q, stack: [], x: ax, z: az, pieces: [] });
-      this.goals.push({ id: `${q}-short`, kind: 'short', quadrant: q, stack: [], x: sx, z: sz, pieces: [] });
-    }
-    for (const g of this.goals) {
-      const h = GOAL_HEIGHT[g.kind];
-      const r = GOAL_RADIUS[g.kind];
-      const color = g.kind === 'alliance' ? (g.alliance === 'red' ? 0xc22828 : 0x1f56c4) : 0x30343a;
-      b.cylinder({ center: [g.x, h / 2, g.z], radius: r, height: h, color });
-      b.cylinder({ center: [g.x, 0.006, g.z], radius: r * 1.8, height: 0.012, color: 0x24272c, collider: false });
-      // Socket ring on top.
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(r * 0.75, 0.006, 8, 24), b.mat(0xd8dde3, { metal: 0.7, rough: 0.3 }));
-      ring.rotation.x = Math.PI / 2;
-      ring.position.set(g.x, h + 0.002, g.z);
-      b.group.add(ring);
-      if (g.kind === 'tall') {
-        this.midfieldRing = new THREE.Mesh(
-          new THREE.RingGeometry(r * 2.2, r * 2.6, 32),
-          new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.0, side: THREE.DoubleSide }),
-        );
-        this.midfieldRing.rotation.x = -Math.PI / 2;
-        this.midfieldRing.position.set(0, 0.004, 0);
-        b.group.add(this.midfieldRing);
+    // Goals: octagonal tapered towers with a receptacle on top.
+    for (const def of GOALS) {
+      const h = GOAL_H[def.kind];
+      const color = def.kind === 'alliance' ? COLORS[def.alliance!] : 0xdcdcdc;
+      const geo = new THREE.CylinderGeometry(GOAL_R_TOP, GOAL_R_BOTTOM, h, 8);
+      geo.rotateY(Math.PI / 8);
+      const mesh = new THREE.Mesh(geo, b.mat(color, { rough: 0.5 }));
+      mesh.position.set(def.x, h / 2, def.z);
+      mesh.castShadow = mesh.receiveShadow = true;
+      b.group.add(mesh);
+      const rec = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.008, 20), b.mat(0x141414));
+      rec.position.set(def.x, h - 0.003, def.z);
+      b.group.add(rec);
+      const pts: number[] = [];
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+        pts.push(def.x + Math.cos(a) * GOAL_R_BOTTOM, 0, def.z + Math.sin(a) * GOAL_R_BOTTOM);
+        pts.push(def.x + Math.cos(a) * GOAL_R_TOP, h, def.z + Math.sin(a) * GOAL_R_TOP);
       }
+      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(pts));
+      if (desc) this.ctx.world.createCollider(desc.setCollisionGroups((0x0001 << 16) | 0x0006).setFriction(0.5));
+      this.goals.push({ id: def.id, kind: def.kind, alliance: def.alliance, quadrant: def.quadrant, stack: [], x: def.x, z: def.z, pieces: [] });
+    }
+    this.midfieldGlow = new THREE.Mesh(
+      new THREE.RingGeometry(0.09, 0.115, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0, side: THREE.DoubleSide }),
+    );
+    this.midfieldGlow.rotation.x = -Math.PI / 2;
+    this.midfieldGlow.position.y = 0.004;
+    b.group.add(this.midfieldGlow);
+
+    // Toggles: 656 mm triangular prisms (yellow / red / blue faces) on shafts at mid-wall.
+    for (const def of TOGGLES) {
+      const group = new THREE.Group();
+      const prism = new THREE.Group();
+      const faceGeo = new THREE.BoxGeometry(TOGGLE_LEN, 0.004, 0.0562);
+      const faces: [PinColor, number, number, number][] = [
+        ['yellow', 0, 0.01507, 0],
+        ['blue', -0.01305, -0.007535, Math.PI / 6],
+        ['red', 0.01305, -0.007535, Math.PI - Math.PI / 6],
+      ];
+      for (const [c, zz, yy, rot] of faces) {
+        const f = new THREE.Mesh(faceGeo, b.mat(COLORS[c], { rough: 0.45 }));
+        f.position.set(0, yy, zz);
+        f.rotation.x = rot;
+        f.castShadow = true;
+        prism.add(f);
+      }
+      for (const s of [-1, 1]) {
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.06, 10), b.mat(0x202020));
+        shaft.rotation.z = Math.PI / 2;
+        shaft.position.x = s * (TOGGLE_LEN / 2 + 0.02);
+        group.add(shaft);
+        const mount = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.09, 0.05), b.mat(0x9aa3ad, { metal: 0.7 }));
+        mount.position.set(s * (TOGGLE_LEN / 2 + 0.05), 0, -0.01);
+        group.add(mount);
+      }
+      group.add(prism);
+      group.position.set(def.x, 0.045, def.z);
+      if (!def.alongX) group.rotation.y = Math.PI / 2;
+      b.group.add(group);
+      b.solid([def.x, 0.045, def.z], def.alongX ? [TOGGLE_LEN, 0.06, 0.05] : [0.05, 0.06, TOGGLE_LEN]);
+      this.toggles.push({ q: def.q, x: def.x, z: def.z, n: def.n, alongX: def.alongX, group: prism, angle: 0, owner: null, touched: false });
     }
 
-    // Toggles: a 25.8" beam at the center of each wall.
-    for (const q of QUADS) {
-      const { a } = AXIS[q];
-      const len = 25.8 * IN;
-      const depth = 2.05 * IN;
-      const x = a[0] * (HALF - depth / 2);
-      const z = a[1] * (HALF - depth / 2);
-      const along = a[0] !== 0;
-      const mesh = b.box({
-        center: [x, depth / 2 + 0.01, z],
-        size: along ? [depth, depth, len] : [len, depth, depth],
-        material: new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.5, emissive: 0x000000 }),
-      });
-      this.toggleViz.push({ q, mesh, x, z, n: [-a[0], -a[1]], cooldown: 0 });
+    // Loaders at the corners beside each Alliance Station.
+    for (const l of LOADERS) {
+      const sx = Math.sign(l.x);
+      const cx = sx * (HALF - 0.13);
+      b.box({ center: [cx, 0.045, l.z], size: [0.26, 0.09, 0.24], color: 0x8c9198 });
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.012, 24), b.mat(l.alliance === 'red' ? 0xc62828 : 0x1f4fbf));
+      rim.position.set(cx, 0.096, l.z);
+      b.group.add(rim);
+      const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.014, 24), b.mat(0x141414));
+      hole.position.set(cx, 0.097, l.z);
+      b.group.add(hole);
     }
   }
 
-  // --------------------------------------------------------------- pieces
-  private makePin(x: number, y: number, z: number, colors: [PinColor, PinColor], standing = true): Piece {
+  // ------------------------------------------------------------- pieces
+  private makePin(x: number, y: number, z: number, colors: [PinColor, PinColor], prismDown = true): Piece {
     const group = new THREE.Group();
-    const top = new THREE.Mesh(this.pinGeo, this.pinMats[colors[0]]);
-    top.position.y = PIN_H / 4;
-    const bot = new THREE.Mesh(this.pinGeo, this.pinMats[colors[1]]);
-    bot.position.y = -PIN_H / 4;
-    for (const m of [top, bot]) {
-      m.castShadow = true;
-      m.receiveShadow = true;
+    const cone = new THREE.Mesh(this.geo.cone, this.mats.pin[colors[0]]);
+    const prism = new THREE.Mesh(this.geo.prism, this.mats.pin[colors[1]]);
+    for (const m of [cone, prism]) {
+      m.castShadow = m.receiveShadow = true;
       group.add(m);
     }
     this.ctx.scene.add(group);
-    const rot = standing ? { x: 0, y: 0, z: 0, w: 1 } : { x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 };
+    const rot = prismDown ? { x: 1, y: 0, z: 0, w: 0 } : { x: 0, y: 0, z: 0, w: 1 };
     const body = this.ctx.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, y, z)
-        .setRotation(rot)
-        .setLinearDamping(0.6)
-        .setAngularDamping(1.2)
-        .setCanSleep(true),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setRotation(rot).setLinearDamping(0.5).setAngularDamping(1.5).setCanSleep(true),
     );
-    this.ctx.world.createCollider(
-      RAPIER.ColliderDesc.cylinder(PIN_H / 2, PIN_R).setMass(0.08).setFriction(0.7).setRestitution(0.05).setCollisionGroups(PIECE_GROUPS),
-      body,
-    );
-    const p: Piece = { id: this.pieces.length, kind: 'pin', colors, body, mesh: group, state: 'loose' };
+    const hull = RAPIER.ColliderDesc.convexHull(this.pinHull) ?? RAPIER.ColliderDesc.cylinder(PIN_LEN / 2, 0.04);
+    this.ctx.world.createCollider(hull.setMass(0.073).setFriction(0.6).setRestitution(0.05).setCollisionGroups(PIECE_GROUPS), body);
+    const p: Piece = { id: this.pieces.length, kind: 'pin', cone: colors[0], prism: colors[1], body, mesh: group, state: 'loose' };
     this.pieces.push(p);
     return p;
   }
 
   private makeCup(x: number, y: number, z: number): Piece {
     const group = new THREE.Group();
-    const wall = new THREE.Mesh(this.cupGeo, this.cupMat);
-    const base = new THREE.Mesh(this.cupBase, this.cupMat);
-    base.rotation.x = -Math.PI / 2;
-    base.position.y = -CUP_H / 2;
-    wall.castShadow = true;
-    group.add(wall, base);
+    const low = new THREE.Mesh(this.geo.cupLow, this.mats.cupClear);
+    const high = new THREE.Mesh(this.geo.cupHigh, this.mats.cupOpaque);
+    high.castShadow = true;
+    group.add(low, high);
     this.ctx.scene.add(group);
     const body = this.ctx.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setLinearDamping(0.6).setAngularDamping(1.2),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setLinearDamping(0.5).setAngularDamping(1.5).setCanSleep(true),
     );
     this.ctx.world.createCollider(
-      RAPIER.ColliderDesc.cylinder(CUP_H / 2, CUP_R * 0.92).setMass(0.05).setFriction(0.6).setCollisionGroups(PIECE_GROUPS),
+      RAPIER.ColliderDesc.cylinder(CUP_H / 2, 0.038).setMass(0.078).setFriction(0.55).setCollisionGroups(PIECE_GROUPS),
       body,
     );
-    const p: Piece = { id: this.pieces.length, kind: 'cup', colors: ['yellow', 'yellow'], body, mesh: group, state: 'loose' };
+    const p: Piece = { id: this.pieces.length, kind: 'cup', cone: 'yellow', prism: 'yellow', body, mesh: group, state: 'loose' };
     this.pieces.push(p);
     return p;
   }
 
-  private spawnPieces(): void {
-    // ASSUMPTION: starting layout is symmetric per quadrant; see README.
-    const pinSpots: [number, number][] = [
-      [20, 0], [28, 8], [28, -8], [48, 0], [44, 28], [44, -28], [58, 10], [58, -10],
-      [64, 24], [64, -24], [36, 34], [36, -34], [26, 20], [26, -20],
-    ];
-    const quadColors = (q: Quadrant): [PinColor, PinColor][] => {
-      const near = QUAD_ALLIANCE[q];
-      const far: Alliance = near === 'red' ? 'blue' : 'red';
-      // 5 red/yellow, 5 blue/yellow, 4 yellow/yellow per quadrant.
-      return [
-        ['yellow', 'yellow'], [near, 'yellow'], [far, 'yellow'], ['yellow', 'yellow'],
-        [near, 'yellow'], [far, 'yellow'], [near, 'yellow'], [far, 'yellow'],
-        ['yellow', 'yellow'], ['yellow', 'yellow'], [near, 'yellow'], [far, 'yellow'],
-        [near, 'yellow'], [far, 'yellow'],
-      ];
+  /**
+   * Starting layout. The 20 elements of the official VEXcode VR layout are placed
+   * exactly; the rest of the field elements (37 Pins and 36 Cups in total on the
+   * field, the remainder being Match Loads and Preloads) are filled in on the same
+   * 1-foot grid with the field's 180° red/blue symmetry. ASSUMPTION for the extras.
+   */
+  private spawnLayout(): void {
+    const mirror = (c: PinColor): PinColor => (c === 'red' ? 'blue' : c === 'blue' ? 'red' : c);
+    const pins: { x: number; z: number; c: [PinColor, PinColor] }[] = [];
+    const cups: { x: number; z: number }[] = [];
+    const addPinPair = (x: number, z: number, c: [PinColor, PinColor]) => {
+      pins.push({ x, z, c });
+      pins.push({ x: -x, z: -z, c: [mirror(c[0]), mirror(c[1])] });
     };
-    const reserved = this.ctx.robot;
-    const clear = (x: number, z: number): [number, number] => {
-      // Keep the starting tile around the robot clear.
-      const [f, r] = reserved.toLocal(x, z);
-      const hl = reserved.cfg.length / 2 + 0.08;
-      const hw = reserved.cfg.width / 2 + 0.08;
-      if (Math.abs(f) < hl && Math.abs(r) < hw) return [x * 0.6, z * 0.6];
-      return [x, z];
+    const addCupPair = (x: number, z: number) => {
+      cups.push({ x, z }, { x: -x, z: -z });
     };
-    for (const q of QUADS) {
-      const colors = quadColors(q);
-      pinSpots.forEach(([al, pe], i) => {
-        const [x, z] = clear(...q2w(q, al, pe));
-        this.makePin(x, PIN_H / 2 + 0.001, z, colors[i]);
-      });
-      const cupSpots: [number, number][] = [[66, 40], [66, -40], [66, 52], [66, -52], [58, 46], [58, -46], [54, 50], [54, -50], [40, 0]];
-      for (const [al, pe] of cupSpots) {
-        const [x, z] = clear(...q2w(q, al, pe));
-        this.makeCup(x, CUP_H / 2 + 0.001, z);
-      }
+    // Official VR layout (converted: VR +Y = North = our -Z).
+    addPinPair(-0.6, -1.745, ['red', 'yellow']);
+    addPinPair(-1.745, -0.6, ['red', 'yellow']);
+    addPinPair(0.6, -1.745, ['blue', 'yellow']);
+    addPinPair(1.745, -0.6, ['blue', 'yellow']);
+    addPinPair(0, -0.6, ['yellow', 'yellow']);
+    addPinPair(-0.6, 0, ['red', 'blue']);
+    addCupPair(-1.2, -1.2);
+    addCupPair(1.2, -1.2);
+    addCupPair(-0.6, -0.6);
+    addCupPair(0.6, -0.6);
+
+    // Fill the rest on the 0.3 m grid, away from goals, toggles, loaders and robot start tiles.
+    const occupied = (x: number, z: number) =>
+      GOALS.some((g) => Math.hypot(g.x - x, g.z - z) < 0.22) ||
+      LOADERS.some((l) => Math.hypot(l.x - x, l.z - z) < 0.3) ||
+      TOGGLES.some((t) => Math.hypot(t.x - x, t.z - z) < 0.42) ||
+      pins.some((p) => Math.hypot(p.x - x, p.z - z) < 0.2) ||
+      cups.some((c) => Math.hypot(c.x - x, c.z - z) < 0.2) ||
+      startPoses('red').concat(startPoses('blue')).some((s) => Math.abs(s.x - x) < 0.36 && Math.abs(s.z - z) < 0.36);
+    const candidates: [number, number][] = [];
+    for (let i = -5; i <= 5; i++) for (let j = -5; j <= 5; j++) {
+      const x = i * 0.3;
+      const z = j * 0.3;
+      if (x < 0 || (x === 0 && z < 0)) candidates.push([x, z]); // one of each mirrored pair
     }
-    // Around the Tall Goal: 3 yellow/yellow + 4 red/blue.
-    const center: [PinColor, PinColor][] = [
-      ['red', 'blue'], ['yellow', 'yellow'], ['red', 'blue'], ['yellow', 'yellow'],
-      ['red', 'blue'], ['yellow', 'yellow'], ['red', 'blue'],
+    // Deterministic shuffle so the layout is the same every match.
+    let seed = 20262027;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+    const extraPins: [PinColor, PinColor][] = [
+      ['red', 'yellow'], ['red', 'yellow'], ['blue', 'yellow'], ['blue', 'yellow'],
+      ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'],
+      ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['red', 'blue'],
     ];
-    center.forEach((c, i) => {
-      const ang = (i / center.length) * Math.PI * 2 + 0.3;
-      this.makePin(Math.cos(ang) * 11 * IN, PIN_H / 2 + 0.001, Math.sin(ang) * 11 * IN, c);
-    });
+    let cupPairs = 14;
+    for (const [x, z] of candidates) {
+      if (occupied(x, z) || occupied(-x, -z)) continue;
+      if (extraPins.length) addPinPair(x, z, extraPins.shift()!);
+      else if (cupPairs > 0) {
+        addCupPair(x, z);
+        cupPairs--;
+      } else break;
+    }
+    for (const p of pins) this.makePin(p.x, PIN_LEN / 2 + 0.002, p.z, p.c);
+    for (const c of cups) this.makeCup(c.x, CUP_H / 2 + 0.002, c.z);
+    // The odd yellow/yellow Pin starts Placed on the Tall Goal. ASSUMPTION.
+    const center = this.goals.find((g) => g.id === 'center')!;
+    const yy = this.makePin(0, 0.5, 0, ['yellow', 'yellow'], false);
+    this.placeOn(center, yy, { type: 'pin', cone: 'yellow', prism: 'yellow' });
   }
 
   private hold(p: Piece): void {
@@ -388,70 +505,113 @@ class OverrideRuntime implements GameRuntime {
     this.held = this.held.filter((h) => h !== p);
   }
 
-  // --------------------------------------------------------------- update
+  private placeOn(g: Goal, piece: Piece, item: StackItem): void {
+    piece.state = 'placed';
+    piece.body.setEnabled(false);
+    g.stack.push(item);
+    g.pieces.push(piece);
+    this.layoutGoal(g);
+  }
+
+  /** Height where the next element's bottom would sit on a goal. */
+  private stackTop(g: Goal): number {
+    let cursor = GOAL_H[g.kind];
+    for (const item of g.stack) cursor = item.type === 'pin' ? cursor - 0.03 + PIN_LEN : cursor - 0.07 + CUP_H;
+    return cursor;
+  }
+
+  private layoutGoal(g: Goal): void {
+    let cursor = GOAL_H[g.kind];
+    g.stack.forEach((item, i) => {
+      const piece = g.pieces[i];
+      if (item.type === 'pin') {
+        const base = cursor - 0.03;
+        piece.mesh.position.set(g.x, base + PIN_LEN / 2, g.z);
+        piece.mesh.rotation.set(0, 0, 0); // cone down
+        cursor = base + PIN_LEN;
+      } else {
+        const base = cursor - 0.07;
+        piece.mesh.position.set(g.x, base + CUP_H / 2, g.z);
+        piece.mesh.rotation.set(item.opaqueUp ? 0 : Math.PI, 0, 0);
+        cursor = base + CUP_H;
+      }
+    });
+  }
+
+  // ----------------------------------------------------------- update
   update(dt: number, ctl: ControlState): void {
     const robot = this.ctx.robot;
     const enabled = this.ctx.clock.enabled;
+    const anim = robot.anim;
+    const range = robot.model.liftRange ?? [0.05, 0.6];
+    const liftRate = (range[1] - range[0]) / (robot.cfg.liftTime ?? 1);
     this.intakeCooldown -= dt;
-    this.placeCooldown -= dt;
     this.dropCooldown -= dt;
-    robot.intakeSpin = enabled && ctl.intake ? 1 : enabled && ctl.outtake ? -1 : 0;
+    anim.intake = enabled && ctl.intake ? 1 : enabled && ctl.outtake ? -1 : 0;
 
-    if (enabled && ctl.intake && this.held.length < robot.cfg.capacity && this.intakeCooldown <= 0) {
+    // Placement in progress: lift rises, wrist orients, claw opens at the end.
+    let liftTarget = this.held.length ? range[0] + 0.12 : range[0] + 0.02;
+    if (this.job) {
+      const j = this.job;
+      j.t += dt;
+      liftTarget = j.height + 0.06;
+      if (j.t >= j.duration) this.finishPlace(j);
+    }
+    if (enabled && ctl.intake && !this.job) liftTarget = range[0];
+    anim.lift += THREE.MathUtils.clamp(liftTarget - anim.lift, -liftRate * dt, liftRate * dt);
+    anim.claw += THREE.MathUtils.clamp((this.held.length && !(this.job && this.job.t > this.job.duration - 0.2) ? 1 : 0.15) - anim.claw, -6 * dt, 6 * dt);
+    anim.wrist += THREE.MathUtils.clamp(this.wristTarget - anim.wrist, -9 * dt, 9 * dt);
+
+    // Intake: grab the element in front of the claw / rollers.
+    if (enabled && ctl.intake && !this.job && this.held.length < robot.cfg.capacity && this.intakeCooldown <= 0) {
       for (const p of this.pieces) {
         if (p.state !== 'loose') continue;
         const t = p.body.translation();
-        if (robot.inIntake(t.x, t.z, t.y)) {
+        if (robot.inIntake(t.x, t.z, t.y, 0.3)) {
           this.hold(p);
-          this.intakeCooldown = 0.22;
+          this.intakeCooldown = 0.35;
           this.ctx.intook();
           break;
         }
       }
     }
 
-    if (enabled && ctl.outtake && this.held.length && this.dropCooldown <= 0) {
+    if (enabled && ctl.outtake && this.held.length && this.dropCooldown <= 0 && !this.job) {
       const p = this.held[this.held.length - 1];
-      const [x, z] = robot.toWorld(robot.cfg.length / 2 + 0.07, 0);
-      const [fx, fz] = robot.toWorld(1, 0);
-      this.release(p, x, (p.kind === 'pin' ? PIN_H : CUP_H) / 2 + 0.01, z, robot.cmd.vx + (fx - robot.x) * 0.4, robot.cmd.vz + (fz - robot.z) * 0.4);
-      this.dropCooldown = 0.35;
+      const [x, z] = robot.toWorld(robot.cfg.length / 2 + 0.1, 0);
+      const [fx, fz] = [Math.cos(robot.heading), -Math.sin(robot.heading)];
+      this.release(p, x, (p.kind === 'pin' ? PIN_LEN : CUP_H) / 2 + 0.02, z, robot.cmd.vx + fx * 0.3, robot.cmd.vz + fz * 0.3);
+      this.dropCooldown = 0.4;
     }
 
-    if (enabled && ctl.score && !this.prevScore) this.tryPlace();
+    if (enabled && ctl.score && !this.prevScore) this.startPlace();
     this.prevScore = ctl.score;
 
-    // Toggles: touching one sets it to your alliance color.
-    for (const tv of this.toggleViz) {
-      tv.cooldown -= dt;
-      if (!enabled || tv.cooldown > 0 || this.toggles[tv.q] === robot.alliance) continue;
-      if (this.robotTouchesToggle(tv)) {
-        this.toggles[tv.q] = robot.alliance;
-        tv.cooldown = 0.6;
+    // Toggles: a robot pushing a Toggle rotates it to its alliance face.
+    for (const tv of this.toggles) {
+      tv.touched = this.robotTouchesToggle(tv);
+      if (tv.touched && enabled && tv.owner !== robot.alliance) {
+        tv.owner = robot.alliance;
         this.ctx.toast(`${tv.q} Toggle → ${robot.alliance.toUpperCase()}`, robot.alliance);
         this.ctx.beep('score');
       }
+      const target = tv.owner === 'red' ? (2 * Math.PI) / 3 : tv.owner === 'blue' ? (-2 * Math.PI) / 3 : 0;
+      tv.angle += THREE.MathUtils.clamp(target - tv.angle, -8 * dt, 8 * dt);
     }
   }
 
   private robotTouchesToggle(tv: ToggleViz): boolean {
     const r = this.ctx.robot;
-    // Distance from robot center to the wall face along the inward normal.
-    const wallX = tv.x - tv.n[0] * (1.025 * IN);
-    const wallZ = tv.z - tv.n[1] * (1.025 * IN);
-    const d = (r.x - wallX) * tv.n[0] + (r.z - wallZ) * tv.n[1];
+    const faceOffset = 0.05;
+    const d = (r.x - tv.x) * tv.n[0] + (r.z - tv.z) * tv.n[1];
     const [fx, fz] = [Math.cos(r.heading), -Math.sin(r.heading)];
     const [rx, rz] = [Math.sin(r.heading), Math.cos(r.heading)];
-    const extent =
-      Math.abs((r.cfg.length / 2) * (fx * tv.n[0] + fz * tv.n[1])) + Math.abs((r.cfg.width / 2) * (rx * tv.n[0] + rz * tv.n[1]));
-    // Lateral overlap with the 25.8" beam.
+    const ext = Math.abs((r.cfg.length / 2) * (fx * tv.n[0] + fz * tv.n[1])) + Math.abs((r.cfg.width / 2) * (rx * tv.n[0] + rz * tv.n[1]));
     const lat = Math.abs((r.x - tv.x) * tv.n[1] - (r.z - tv.z) * tv.n[0]);
-    const latExtent =
-      Math.abs((r.cfg.length / 2) * (fx * tv.n[1] - fz * tv.n[0])) + Math.abs((r.cfg.width / 2) * (rx * tv.n[1] - rz * tv.n[0]));
-    return d - extent < 2.05 * IN + 0.025 && lat < 12.9 * IN + latExtent;
+    const latExt = Math.abs((r.cfg.length / 2) * (fx * tv.n[1] - fz * tv.n[0])) + Math.abs((r.cfg.width / 2) * (rx * tv.n[1] - rz * tv.n[0]));
+    return d - ext < faceOffset && lat < TOGGLE_LEN / 2 + latExt;
   }
 
-  /** The goal directly in front of the robot's scoring mechanism, if any. */
   private goalInFront(): Goal | null {
     const r = this.ctx.robot;
     let best: Goal | null = null;
@@ -459,8 +619,8 @@ class OverrideRuntime implements GameRuntime {
     for (const g of this.goals) {
       const [f, l] = r.toLocal(g.x, g.z);
       const front = r.cfg.length / 2;
-      if (f > front - 0.06 && f < front + 0.22 && Math.abs(l) < 0.16) {
-        const d = Math.hypot(f - front, l);
+      if (f > front - 0.04 && f < front + 0.2 && Math.abs(l) < 0.1) {
+        const d = Math.hypot(f - front - 0.06, l);
         if (d < bestD) {
           bestD = d;
           best = g;
@@ -470,87 +630,68 @@ class OverrideRuntime implements GameRuntime {
     return best;
   }
 
-  private tryPlace(): void {
-    if (this.placeCooldown > 0) return;
+  private startPlace(): void {
+    if (this.job) return;
     const g = this.goalInFront();
     if (!g) {
-      this.ctx.toast('Line up a goal with your intake', 'info');
+      this.ctx.toast('Drive up so the Goal is centered in front of your claw', 'info');
       return;
     }
     const top = g.stack[g.stack.length - 1];
-    const wantKind: 'pin' | 'cup' = top && top.type === 'pin' ? 'cup' : 'pin';
-    const piece = this.held.find((p) => p.kind === wantKind);
+    const want: 'pin' | 'cup' = top && top.type === 'pin' ? 'cup' : 'pin';
+    const piece = this.held.find((p) => p.kind === want);
     if (!piece) {
-      this.ctx.toast(wantKind === 'cup' ? 'Need a Cup to stack on that Pin' : 'Need a Pin for that goal', 'bad');
+      this.ctx.toast(want === 'cup' ? 'This Pin needs a Cup on it before the next Pin' : 'You need a Pin for this Goal', 'bad');
       return;
     }
-    const item: StackItem =
-      piece.kind === 'cup' ? { type: 'cup' } : { type: 'pin', up: this.upColor(piece), down: this.downColor(piece) };
+    const item: StackItem = piece.kind === 'cup' ? { type: 'cup', opaqueUp: this.cupOpaqueUp } : { type: 'pin', cone: piece.cone, prism: piece.prism };
     const res = canPlace(g, item, this.me);
     if (!res.ok) {
       this.ctx.toast(res.reason, 'bad');
       return;
     }
+    const height = this.stackTop(g);
+    const range = this.ctx.robot.model.liftRange ?? [0.05, 0.6];
+    if (height > range[1] + 0.04) {
+      this.ctx.toast(`Too tall for this lift (stack at ${(height / IN).toFixed(0)}")`, 'bad');
+      return;
+    }
+    const rate = (range[1] - range[0]) / (this.ctx.robot.cfg.liftTime ?? 1);
+    // Pins are picked up flat-end down; the wrist flips them tip-down to nest.
+    const flip = piece.kind === 'pin' ? 0.35 : 0;
+    if (piece.kind === 'pin') this.wristTarget += Math.PI;
+    if (piece.kind === 'cup' && !this.cupOpaqueUp) this.wristTarget += 0; // already oriented in the claw
+    const travel = Math.abs(height + 0.06 - this.ctx.robot.anim.lift) / rate;
+    this.job = { goal: g, piece, t: 0, duration: Math.max(travel, flip) + 0.25, height };
+  }
+
+  private finishPlace(j: PlaceJob): void {
+    this.job = null;
+    const g = j.goal;
+    if (this.goalInFront() !== g) {
+      this.ctx.toast('Missed: you drove off the Goal while placing', 'bad');
+      return;
+    }
+    const piece = j.piece;
+    const item: StackItem = piece.kind === 'cup' ? { type: 'cup', opaqueUp: this.cupOpaqueUp } : { type: 'pin', cone: piece.cone, prism: piece.prism };
+    if (!canPlace(g, item, this.me).ok) return;
     this.held = this.held.filter((h) => h !== piece);
-    piece.state = 'placed';
-    piece.goal = g.id;
-    g.stack.push(item);
-    g.pieces.push(piece);
-    this.placeCooldown = 0.3;
-    this.layoutGoal(g);
+    this.placeOn(g, piece, item);
     if (item.type === 'pin') {
       this.placedByMe++;
-      const owner = item.up === 'yellow' ? (g.quadrant ? this.toggles[g.quadrant] : null) : item.up;
-      const pts = item.up === 'yellow' ? OVERRIDE.points.ownedYellowPin : OVERRIDE.points.alliancePin;
-      this.ctx.toast(
-        item.up === 'yellow'
-          ? `Yellow Pin placed${owner ? ` (+${pts} ${owner.toUpperCase()})` : ' (flip the Toggle to own it)'}`
-          : `+${pts} ${item.up.toUpperCase()} Pin`,
-        item.up === 'yellow' ? 'good' : item.up,
-      );
+      const halves = visibleHalves(g).slice(-2).join(' + ');
+      this.ctx.toast(`Pin placed (${halves})`, item.cone === 'yellow' && item.prism === 'yellow' ? 'good' : this.me);
       this.ctx.scored(1);
-      this.ctx.beep('score');
     } else {
-      this.ctx.toast('Cup stacked: ready for another Pin', 'info');
+      this.ctx.toast(item.opaqueUp ? 'Cup placed: opaque half up' : 'Cup placed upside-down: hides the Pin below’s top half', 'info');
     }
-  }
-
-  /** Pin orientation chosen by the driver: which half faces up. */
-  private upColor(p: Piece): PinColor {
-    const [a, b] = p.colors;
-    if (this.orientation === 'yellow') return a === 'yellow' || b === 'yellow' ? 'yellow' : a;
-    if (a === this.me || b === this.me) return this.me;
-    return a;
-  }
-
-  private downColor(p: Piece): PinColor {
-    const up = this.upColor(p);
-    return p.colors[0] === up ? p.colors[1] : p.colors[0];
-  }
-
-  private layoutGoal(g: Goal): void {
-    let cursor = GOAL_HEIGHT[g.kind];
-    g.stack.forEach((item, i) => {
-      const piece = g.pieces[i];
-      let base: number;
-      if (item.type === 'pin') {
-        base = cursor - 1 * IN;
-        cursor = base + PIN_H;
-        const flipped = piece.colors[0] !== item.up;
-        piece.mesh.rotation.set(flipped ? Math.PI : 0, 0, 0);
-      } else {
-        base = cursor - 2.5 * IN;
-        cursor = base + CUP_H;
-        piece.mesh.rotation.set(0, 0, 0);
-      }
-      piece.mesh.position.set(g.x, base + PIN_H / 2, g.z);
-    });
+    this.ctx.beep('score');
   }
 
   private descore(): void {
     const g = this.goalInFront();
     if (!g || !g.stack.length) {
-      this.ctx.toast('No goal stack in front of you', 'info');
+      this.ctx.toast('No stack in front of you', 'info');
       return;
     }
     const item = g.stack.pop()!;
@@ -558,21 +699,22 @@ class OverrideRuntime implements GameRuntime {
     if (item.type === 'pin') this.placedByMe = Math.max(0, this.placedByMe - 1);
     if (this.held.length < this.ctx.robot.cfg.capacity) {
       this.hold(piece);
-      this.ctx.toast('Descored into robot', 'info');
+      this.ctx.toast('Descored into your claw', 'info');
     } else {
       const r = this.ctx.robot;
-      const [x, z] = r.toWorld(r.cfg.length / 2 + 0.12, 0.12);
-      this.release(piece, x, 0.12, z);
+      const [x, z] = r.toWorld(r.cfg.length / 2 + 0.15, 0.15);
+      this.release(piece, x, 0.15, z);
       this.ctx.toast('Descored onto the floor', 'info');
     }
   }
 
   onAction(a: Action): void {
     if (a === 'flip') {
-      this.orientation = this.orientation === 'alliance' ? 'yellow' : 'alliance';
-      this.ctx.toast(`Pins now place ${this.orientation === 'yellow' ? 'YELLOW' : 'ALLIANCE color'} side up`, 'info');
+      this.cupOpaqueUp = !this.cupOpaqueUp;
+      this.wristTarget += Math.PI;
+      this.ctx.toast(this.cupOpaqueUp ? 'Cups: opaque half UP (hides the next Pin’s lower half)' : 'Cups: opaque half DOWN (hides the lower Pin’s top half)', 'info');
     } else if (a === 'descore') {
-      if (this.ctx.clock.enabled) this.descore();
+      if (this.ctx.clock.enabled && !this.job) this.descore();
     } else if (a === 'feed') {
       this.matchLoad();
     }
@@ -580,62 +722,70 @@ class OverrideRuntime implements GameRuntime {
 
   private matchLoad(): void {
     const r = this.ctx.robot;
-    const wallX = this.me === 'red' ? -HALF : HALF;
-    if (Math.abs(r.x - wallX) > 0.75) {
-      this.ctx.toast('Match loads: drive next to your alliance wall', 'info');
+    const near = LOADERS.filter((l) => l.alliance === this.me).some((l) => Math.hypot(r.x - l.x, r.z - l.z) < 0.6);
+    if (!near) {
+      this.ctx.toast('Match loads: drive to one of your Loaders (corners on your side)', 'info');
       return;
     }
-    if (this.matchLoads <= 0) {
-      this.ctx.toast('No match-load Cups left', 'bad');
+    const q = this.loaderQueue[this.me];
+    if (!q.length) {
+      this.ctx.toast('No Match Loads left', 'bad');
       return;
     }
     if (this.held.length >= r.cfg.capacity) {
       this.ctx.toast('Robot is full', 'bad');
       return;
     }
-    this.matchLoads--;
-    const cup = this.makeCup(r.x, 0.2, r.z);
-    this.hold(cup);
-    this.ctx.toast(`Match-load Cup (${this.matchLoads} left)`, 'info');
+    const next = q.shift()!;
+    const piece = next === 'cup'
+      ? this.makeCup(r.x, 0.3, r.z)
+      : this.makePin(r.x, 0.3, r.z, next === 'yy' ? ['yellow', 'yellow'] : [this.me, 'yellow']);
+    this.hold(piece);
+    this.ctx.toast(`Match Load: ${next === 'cup' ? 'Cup' : next === 'yy' ? 'yellow Pin' : 'alliance Pin'} (${q.length} left)`, 'info');
   }
 
   onPhaseChange(prev: Phase | null): void {
     if (prev?.kind === 'auto') {
-      const s = this.scores(false);
-      const mine = s[this.me].total;
-      const other = s[this.me === 'red' ? 'blue' : 'red'].total;
-      this.autoBonus = mine > other ? this.me : other > mine ? (this.me === 'red' ? 'blue' : 'red') : 'tie';
+      this.autoBonus = autoWinner(this.state());
       this.ctx.toast(
-        this.autoBonus === this.me ? `Autonomous Bonus +${OVERRIDE.points.autoBonus}!` : this.autoBonus === 'tie' ? 'Autonomous tied: bonus split' : 'Opponent wins the Autonomous Bonus',
+        this.autoBonus === this.me ? `Autonomous Bonus +${OVERRIDE.points.autoBonus}!` : this.autoBonus === 'tie' ? 'Autonomous tied: +6 each' : 'Opponent wins the Autonomous Bonus',
         this.autoBonus === this.me ? 'good' : 'info',
       );
     }
   }
 
+  /** Any part of the robot inside the Midfield diamond. */
   private robotInMidfield(): boolean {
     const r = this.ctx.robot;
-    return isInMidfield(r.x / IN, r.z / IN);
+    const hl = r.cfg.length / 2;
+    const hw = r.cfg.width / 2;
+    for (const [f, s] of [[0, 0], [hl, hw], [hl, -hw], [-hl, hw], [-hl, -hw], [hl, 0], [-hl, 0], [0, hw], [0, -hw]] as const) {
+      const [x, z] = r.toWorld(f, s);
+      if (isInMidfield(x, z)) return true;
+    }
+    return false;
   }
 
-  private scores(includeMidfield = true) {
-    const mid = includeMidfield && this.robotInMidfield() ? 1 : 0;
-    return scoreOverride({
+  private state(atEnd = false) {
+    const mid = this.robotInMidfield() ? 1 : 0;
+    const toggles = Object.fromEntries(this.toggles.map((t) => [t.q, atEnd && t.touched ? null : t.owner])) as Record<Quadrant, Alliance | null>;
+    return {
       goals: this.goals,
-      toggles: this.toggles,
+      toggles,
       robotsInMidfield: { red: this.me === 'red' ? mid : 0, blue: this.me === 'blue' ? mid : 0 },
       autoBonus: this.ctx.mode === 'match' ? this.autoBonus : null,
-    });
+    };
   }
 
   liveScore(): { mine: number; other: number; lines: ScoreLine[] } {
-    const s = this.scores();
+    const s = scoreOverride(this.state());
     const m = s[this.me];
     return {
       mine: m.total,
       other: s[this.me === 'red' ? 'blue' : 'red'].total,
       lines: [
-        { label: 'Alliance Pins', value: m.alliancePins },
-        { label: 'Owned yellow Pins', value: m.yellowPins },
+        { label: 'Alliance halves', value: m.alliancePins },
+        { label: 'Yellow halves', value: m.yellowPins },
         { label: 'Midfield', value: m.midfield },
         { label: 'Auto bonus', value: m.autoBonus },
       ],
@@ -643,17 +793,18 @@ class OverrideRuntime implements GameRuntime {
   }
 
   statusHtml(): string {
-    const chip = (q: Quadrant) => {
-      const o = this.toggles[q];
-      const c = o === 'red' ? 'var(--red)' : o === 'blue' ? 'var(--blue)' : 'var(--muted)';
-      return `<span class="chip" style="--c:${c}">${q}</span>`;
+    const chip = (t: ToggleViz) => {
+      const c = t.owner === 'red' ? 'var(--red)' : t.owner === 'blue' ? 'var(--blue)' : 'var(--yellow)';
+      return `<span class="chip" style="--c:${c}" title="${t.touched ? 'touching: does not count' : ''}">${t.q}${t.touched ? '✋' : ''}</span>`;
     };
     const mid = this.robotInMidfield();
+    const loads = this.loaderQueue[this.me].length;
     return `
-      <div class="row"><span class="lbl">Toggles</span>${QUADS.map(chip).join('')}</div>
-      <div class="row"><span class="lbl">Pin side up</span><b>${this.orientation === 'yellow' ? '<span style="color:var(--yellow)">YELLOW</span>' : `<span style="color:var(--${this.me})">${this.me.toUpperCase()}</span>`}</b> <span class="hint">R / A to flip</span></div>
-      <div class="row"><span class="lbl">Midfield</span><b style="color:${mid ? 'var(--good)' : 'var(--muted)'}">${mid ? 'IN (+8)' : 'out'}</b></div>
-      <div class="row"><span class="lbl">Match loads</span><b>${this.matchLoads}</b></div>`;
+      <div class="row"><span class="lbl">Toggles</span>${this.toggles.map(chip).join('')}</div>
+      <div class="row"><span class="lbl">Next Cup</span><b>${this.cupOpaqueUp ? 'opaque up' : 'opaque DOWN'}</b> <span class="hint">R / A to flip</span></div>
+      <div class="row"><span class="lbl">Midfield</span><b style="color:${mid ? 'var(--good)' : 'var(--muted)'}">${mid ? 'IN (+8, owns center yellows)' : 'out'}</b></div>
+      <div class="row"><span class="lbl">Match Loads</span><b>${loads}</b> <span class="hint">B at your Loader</span></div>
+      ${this.job ? `<div class="row"><span class="lbl">Placing</span><b>${Math.round((this.job.t / this.job.duration) * 100)}%</b></div>` : ''}`;
   }
 
   cargoHtml(): string {
@@ -662,7 +813,7 @@ class OverrideRuntime implements GameRuntime {
       const p = this.held[i];
       if (!p) slots.push('<span class="slot"></span>');
       else if (p.kind === 'cup') slots.push('<span class="slot cup" title="Cup"></span>');
-      else slots.push(`<span class="slot pin" style="--a:${CSS[p.colors[0]]};--b:${CSS[p.colors[1]]}" title="Pin"></span>`);
+      else slots.push(`<span class="slot pin" style="--a:${CSS[p.prism]};--b:${CSS[p.cone]}" title="Pin"></span>`);
     }
     return slots.join('');
   }
@@ -679,79 +830,81 @@ class OverrideRuntime implements GameRuntime {
         const q = p.body.rotation();
         p.mesh.position.set(t.x, t.y, t.z);
         p.mesh.quaternion.set(q.x, q.y, q.z, q.w);
-        if (t.y < -1) p.body.setTranslation({ x: 0, y: 0.2, z: 0 }, true);
+        if (t.y < -1) p.body.setTranslation({ x: 0, y: 0.3, z: 0.4 }, true);
       }
     }
-    // Carried pieces ride on the robot.
+    // First held element in the claw, the rest riding on the robot.
+    const carry = r.model.carry;
     this.held.forEach((p, i) => {
-      const [x, z] = r.toWorld(-r.cfg.length * 0.15 + i * 0.02, (i - (this.held.length - 1) / 2) * 0.09);
-      p.mesh.position.set(x, r.mesh.position.y + r.cfg.height * 0.55 + i * 0.01, z);
-      p.mesh.rotation.set(0, 0, 0);
+      if (i === 0 && carry) {
+        carry.updateWorldMatrix(true, false);
+        const pos = new THREE.Vector3();
+        const quat = new THREE.Quaternion();
+        carry.getWorldPosition(pos);
+        carry.getWorldQuaternion(quat);
+        p.mesh.position.copy(pos);
+        p.mesh.quaternion.copy(quat);
+        if (p.kind === 'pin') p.mesh.rotateX(Math.PI);
+        if (p.kind === 'cup' && !this.cupOpaqueUp) p.mesh.rotateX(Math.PI);
+      } else {
+        const [x, z] = r.toWorld(r.cfg.length * 0.15, 0);
+        p.mesh.position.set(x, r.mesh.position.y + 0.12 + i * 0.02, z);
+        p.mesh.rotation.set(0, -r.heading, Math.PI / 2);
+      }
     });
-    // Toggle colors.
-    for (const tv of this.toggleViz) {
-      const owner = this.toggles[tv.q];
-      const m = tv.mesh.material as THREE.MeshStandardMaterial;
-      const col = owner === 'red' ? 0xd92b2b : owner === 'blue' ? 0x1f5fd6 : 0xe8e8e8;
-      m.color.setHex(col);
-      m.emissive.setHex(owner ? col : 0);
-      m.emissiveIntensity = owner ? 0.35 : 0;
-    }
-    const ringMat = this.midfieldRing.material as THREE.MeshBasicMaterial;
-    ringMat.opacity = this.robotInMidfield() ? 0.6 + Math.sin(performance.now() / 150) * 0.2 : 0;
+    for (const tv of this.toggles) tv.group.rotation.x = tv.angle;
+    const glow = this.midfieldGlow.material as THREE.MeshBasicMaterial;
+    glow.opacity = this.robotInMidfield() ? 0.7 + Math.sin(performance.now() / 150) * 0.25 : 0;
   }
 
   finalize(): MatchSummary {
-    const s = this.scores();
+    const st = this.state(true);
+    const s = scoreOverride(st);
     const m = s[this.me];
     const o = s[this.me === 'red' ? 'blue' : 'red'];
     const lines: ScoreLine[] = [
-      { label: 'Alliance-color Pins', value: m.alliancePins },
-      { label: 'Owned yellow Pins', value: m.yellowPins },
+      { label: 'Alliance-color Pin halves', value: m.alliancePins },
+      { label: 'Owned yellow Pin halves', value: m.yellowPins },
       { label: 'Robot in Midfield', value: m.midfield },
     ];
     if (this.ctx.mode === 'match') lines.push({ label: 'Autonomous Bonus', value: m.autoBonus });
     lines.push({ label: 'Pins placed', value: this.placedByMe });
-    lines.push({ label: 'Toggles owned', value: `${QUADS.filter((q) => this.toggles[q] === this.me).length}/4` });
+    lines.push({ label: 'Toggles owned at the end', value: `${Object.values(st.toggles).filter((t) => t === this.me).length}/4` });
     const notes: string[] = [];
-    if (o.total > 0) notes.push(`You also gave the opposing alliance ${o.total} points (check which side of your Pins faces up).`);
-    if (this.ctx.mode === 'match') notes.push('Autonomous Win Point tasks are not modeled.');
+    const touched = this.toggles.filter((t) => t.touched).map((t) => t.q);
+    if (touched.length) notes.push(`You ended touching the ${touched.join(', ')} Toggle, so it didn’t count. Back off before the buzzer.`);
+    if (o.total > 0) notes.push(`The opposing alliance got ${o.total} points from colored halves you placed.`);
+    if (this.ctx.mode === 'match') notes.push('The Autonomous Win Point isn’t modeled.');
     return { total: m.total, lines, notes };
   }
 
   footprints(): Footprint[] {
     const out: Footprint[] = [
-      { x: 0, z: 0, w: OVERRIDE.midfieldHalfDiagonalIn * 2 * IN, d: OVERRIDE.midfieldHalfDiagonalIn * 2 * IN, color: 'rgba(255,225,77,0.18)', shape: 'diamond' },
+      { x: 0, z: 0, w: OVERRIDE.midfieldHalfDiagonal * 2, d: OVERRIDE.midfieldHalfDiagonal * 2, color: 'rgba(255,225,77,0.16)', shape: 'diamond' },
     ];
     for (const g of this.goals) {
-      out.push({
-        x: g.x, z: g.z, w: GOAL_RADIUS[g.kind] * 3, d: GOAL_RADIUS[g.kind] * 3,
-        color: g.kind === 'alliance' ? (g.alliance === 'red' ? '#d92b2b' : '#1f5fd6') : '#aaaaaa',
-        shape: 'circle',
-      });
+      out.push({ x: g.x, z: g.z, w: GOAL_R_BOTTOM * 2.4, d: GOAL_R_BOTTOM * 2.4, color: g.kind === 'alliance' ? (g.alliance === 'red' ? '#d92b2b' : '#1f5fd6') : '#cfcfcf', shape: 'circle' });
     }
-    for (const tv of this.toggleViz) {
-      const along = tv.n[0] !== 0;
-      out.push({ x: tv.x, z: tv.z, w: along ? 0.06 : 0.66, d: along ? 0.66 : 0.06, color: '#e8e8e8' });
-    }
+    for (const t of this.toggles) out.push({ x: t.x, z: t.z, w: t.alongX ? TOGGLE_LEN : 0.06, d: t.alongX ? 0.06 : TOGGLE_LEN, color: '#f2c518' });
+    for (const l of LOADERS) out.push({ x: Math.sign(l.x) * (HALF - 0.13), z: l.z, w: 0.26, d: 0.24, color: '#8c9198' });
     return out;
   }
 
   dispose(): void {
-    this.pinGeo.dispose();
-    this.cupGeo.dispose();
-    this.cupBase.dispose();
-    for (const m of Object.values(this.pinMats)) m.dispose();
-    this.cupMat.dispose();
+    for (const g of Object.values(this.geo)) g.dispose();
+    for (const m of Object.values(this.mats.pin)) m.dispose();
+    this.mats.cupClear.dispose();
+    this.mats.cupOpaque.dispose();
   }
 }
 
 function startPoses(alliance: Alliance): StartPose[] {
   const s = alliance === 'red' ? -1 : 1;
   const heading = alliance === 'red' ? 0 : Math.PI;
+  // Driver's left is -Z for red (facing +X) and +Z for blue.
   return [
-    { label: 'Left tile', x: s * 56 * IN, z: s * 40 * IN, heading },
-    { label: 'Right tile', x: s * 56 * IN, z: -s * 40 * IN, heading },
+    { label: 'Left of the Toggle', x: s * 1.5, z: s * 1.0, heading },
+    { label: 'Right of the Toggle', x: s * 1.5, z: -s * 1.0, heading },
   ];
 }
 
@@ -782,7 +935,7 @@ export const OverrideGame: GameDef = {
   name: 'Override',
   program: 'VEX V5RC',
   season: '2026–27',
-  blurb: '12′×12′ field. Stack Pins and Cups on nine Goals, flip the four wall Toggles to own the yellow Pins, and finish in the Midfield.',
+  blurb: '12′×12′ field. Stack hex Pins and hourglass Cups on nine octagonal Goals, flip the four wall Toggles to own the yellow halves, and finish in the Midfield.',
   fieldX: HALF * 2,
   fieldZ: HALF * 2,
   presets: PRESETS,
@@ -790,36 +943,36 @@ export const OverrideGame: GameDef = {
     { id: 'match', label: 'Full match', description: '0:15 autonomous (drive it yourself to rehearse your route) + 1:45 driver control, with the Autonomous Bonus.' },
     { id: 'driver', label: 'Driver period', description: '1:45 driver control with a 10 s endgame.' },
     { id: 'skills', label: 'Driver skills', description: '60 s solo run. Score as much as you can.' },
-    { id: 'sprint', label: 'Placement sprint', description: 'Place 8 Pins as fast as possible. Timed.' },
-    { id: 'gates', label: 'Gate course', description: 'Figure-eight through the Goals. Pure driving accuracy and speed.' },
+    { id: 'sprint', label: 'Placement sprint', description: 'Place 6 Pins as fast as possible. Timed.' },
+    { id: 'gates', label: 'Gate course', description: 'Weave between the Goals. Pure driving accuracy and speed.' },
     { id: 'free', label: 'Free practice', description: 'No clock. Try things out.' },
   ],
+  // Red drivers stand along the West wall (−X), blue along the East wall.
   stations: [
-    { id: 'red-left', label: 'Red, left', alliance: 'red', eye: [-HALF - 1.1, 1.65, -0.75], target: [0.15, 0, -0.1], yaw: 0 },
-    { id: 'red-right', label: 'Red, right', alliance: 'red', eye: [-HALF - 1.1, 1.65, 0.75], target: [0.15, 0, 0.1], yaw: 0 },
-    { id: 'blue-left', label: 'Blue, left', alliance: 'blue', eye: [HALF + 1.1, 1.65, 0.75], target: [-0.15, 0, 0.1], yaw: Math.PI },
-    { id: 'blue-right', label: 'Blue, right', alliance: 'blue', eye: [HALF + 1.1, 1.65, -0.75], target: [-0.15, 0, -0.1], yaw: Math.PI },
+    { id: 'red-left', label: 'Red, left', alliance: 'red', eye: [-HALF - 0.9, 1.6, -0.75], target: [0.2, 0, -0.1], yaw: 0 },
+    { id: 'red-right', label: 'Red, right', alliance: 'red', eye: [-HALF - 0.9, 1.6, 0.75], target: [0.2, 0, 0.1], yaw: 0 },
+    { id: 'blue-left', label: 'Blue, left', alliance: 'blue', eye: [HALF + 0.9, 1.6, 0.75], target: [-0.2, 0, 0.1], yaw: Math.PI },
+    { id: 'blue-right', label: 'Blue, right', alliance: 'blue', eye: [HALF + 0.9, 1.6, -0.75], target: [-0.2, 0, -0.1], yaw: Math.PI },
   ],
   startPoses,
   phases,
   gates(): Gate[] {
-    // Figure-eight around the W/S/E/N short goals and back through the Midfield.
-    const g = (x: number, z: number, yaw: number): Gate => ({ x: x * IN, z: z * IN, yaw, width: 22 * IN });
+    const g = (x: number, z: number, yaw: number): Gate => ({ x, z, yaw, width: 0.5 });
     return [
-      g(-36, 0, Math.PI / 2),
-      g(-20, 44, 0),
-      g(20, 44, 0),
-      g(44, 0, Math.PI / 2),
-      g(20, -44, 0),
-      g(0, 0, Math.PI / 4),
-      g(-20, -44, 0),
-      g(-50, -20, Math.PI / 2),
+      g(-0.9, 0.9, Math.PI / 4),
+      g(0, 1.2, Math.PI / 2),
+      g(0.9, 0.9, -Math.PI / 4),
+      g(1.2, 0, 0),
+      g(0.9, -0.9, Math.PI / 4),
+      g(0, -1.2, Math.PI / 2),
+      g(-0.9, -0.9, -Math.PI / 4),
+      g(-1.5, 0.3, 0),
     ];
   },
-  sprint: { count: 8, label: 'Pins placed' },
+  sprint: { count: 6, label: 'Pins placed' },
   create: (ctx) => new OverrideRuntime(ctx),
   notes: [
-    'Match timing (0:15 auto + 1:45 driver), point values (12 auto bonus, 5 alliance Pin, 10 owned yellow Pin, 8 Midfield), the goal counts and heights, Pin and Cup counts, the Toggle-ownership rule and the Midfield diamond come from published summaries of the Override game manual.',
-    'ASSUMPTIONS: the starting layout of Pins and Cups, the exact Goal positions, which half of a Pin counts (we score the half facing up), goal stack limits, how a Toggle is flipped (we treat touching it as flipping it), and how yellow Pins on the Tall Goal are owned. All of these live in src/games/override/rules.ts and game.ts so you can match them to the official manual.',
+    'From the game manual and the official field layout: match timing (0:15 auto + 1:45 driver), points (12 auto bonus or 6 each on a tie, 5 per alliance-color Pin half, 10 per owned yellow half, 8 per Robot in the Midfield), per-half scoring with Cups hiding halves inside their opaque half, Toggles only counting when no robot touches them, the nine octagonal Goals and their heights (8.77″ / 5.77″ / 3.25″) and positions, Toggle and Loader positions, element counts, and the 48″ Midfield diamond.',
+    'ASSUMPTIONS: where the field elements beyond the 20 in the official VEXcode VR layout start (filled in symmetrically), one yellow Pin starting on the Tall Goal, the order Match Loads come out of a Loader, how a Toggle turns (pushing it shows your color), and that the Tall Goal’s yellow halves go to the alliance with more robots in the Midfield. The Autonomous Win Point isn’t modeled. These live in src/games/override/.',
   ],
 };

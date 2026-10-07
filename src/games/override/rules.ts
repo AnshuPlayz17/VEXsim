@@ -1,9 +1,18 @@
 /**
- * VEX V5 Robotics Competition 2026-27 "Override" — rules and scoring.
+ * VEX V5 Robotics Competition 2026-27 "Override": rules and scoring.
  *
- * Sourced from the public game manual summaries (see README). Values marked
- * ASSUMPTION are not stated in the material we could access; they are kept in
- * one place so they are easy to correct when you check the official manual.
+ * Follows the game manual's scoring rules:
+ *  - SC2: a Pin is Placed when nested in a Goal, or in a Cup nested on another
+ *    Placed Pin; a Cup is Placed when nested on a Placed Pin. Each Goal / Cup
+ *    half holds at most one Pin half, so stacks alternate Pin, Cup, Pin, ...
+ *  - SC3: each Pin has two halves, each Scored separately while fully visible,
+ *    i.e. not nested inside the opaque half of a Cup.
+ *  - Alliance-color halves are worth 5 to that alliance; yellow halves are worth
+ *    10 to the alliance that owns the Goal's quadrant Toggle. A Toggle only
+ *    counts while no Robot is touching it.
+ *  - Robot in the Midfield: 8. Autonomous Bonus: 12 (6 each on a tie).
+ *
+ * Values marked ASSUMPTION are not spelled out in the material we could access.
  */
 export type Alliance = 'red' | 'blue';
 export type PinColor = 'red' | 'blue' | 'yellow';
@@ -13,36 +22,35 @@ export const OVERRIDE = {
   autoSeconds: 15,
   driverSeconds: 105,
   skillsSeconds: 60,
-  /** Final seconds of the driver period that make up the endgame. */
   endgameSeconds: 10,
   points: {
     autoBonus: 12,
-    alliancePin: 5,
-    ownedYellowPin: 10,
+    autoBonusTie: 6,
+    allianceHalf: 5,
+    yellowHalf: 10,
     robotInMidfield: 8,
   },
-  /** Midfield: diamond |x| + |z| <= 24", judged by robot center. */
-  midfieldHalfDiagonalIn: 24,
-  /** ASSUMPTION: maximum Placed Pins per goal stack (pin, cup, pin, cup, ...). */
-  maxPinsPerGoal: { alliance: 3, short: 4, tall: 5 },
-  /**
-   * ASSUMPTION: the Tall Goal is in no quadrant, so its yellow Pins go to the
-   * alliance that owns the majority (3+) of Toggles. Ties score nothing.
-   */
-  tallGoalYellowRule: 'toggle-majority' as const,
+  /** Midfield diamond |x| + |z| <= 0.6 m (the taped 48" diamond). */
+  midfieldHalfDiagonal: 0.6,
   pinCounts: { redYellow: 20, blueYellow: 20, yellowYellow: 19, redBlue: 4 },
   cups: 56,
-  matchLoadCupsPerAlliance: 10,
+  /** Robots may expand to 50" tall during a match. */
+  maxHeight: 50,
 };
 
+/**
+ * A Pin's tapered (cone) end always nests downward into the Goal or Cup, so its
+ * `cone` color is the lower half and `prism` color the upper half.
+ */
 export interface PinItem {
   type: 'pin';
-  /** Color of the half facing up once Placed (the half that scores). ASSUMPTION. */
-  up: PinColor;
-  down: PinColor;
+  cone: PinColor;
+  prism: PinColor;
 }
 export interface CupItem {
   type: 'cup';
+  /** Normal orientation: clear half down, opaque half up. */
+  opaqueUp: boolean;
 }
 export type StackItem = PinItem | CupItem;
 
@@ -50,12 +58,14 @@ export interface GoalState {
   id: string;
   kind: 'alliance' | 'short' | 'tall';
   alliance?: Alliance;
+  /** null for the Tall (center) Goal in the Midfield. */
   quadrant: Quadrant | null;
   stack: StackItem[];
 }
 
 export interface OverrideState {
   goals: GoalState[];
+  /** Toggle color at rest; null when neutral (yellow face) or touched by a robot. */
   toggles: Record<Quadrant, Alliance | null>;
   robotsInMidfield: Record<Alliance, number>;
   autoBonus: Alliance | 'tie' | null;
@@ -71,45 +81,64 @@ export interface AllianceScore {
 
 export type PlaceResult = { ok: true } | { ok: false; reason: string };
 
-export function pinsIn(goal: GoalState): PinItem[] {
-  return goal.stack.filter((s): s is PinItem => s.type === 'pin');
-}
-
-/**
- * Stacks alternate Pin, Cup, Pin, Cup... A Pin is Placed when nested in the goal
- * or in a Cup that sits on a Placed Pin; a Cup is Placed when on a Placed Pin.
- */
 export function canPlace(goal: GoalState, item: StackItem, robotAlliance: Alliance): PlaceResult {
   if (goal.kind === 'alliance' && goal.alliance !== robotAlliance) {
-    return { ok: false, reason: 'Opponent Alliance Goal' };
+    return { ok: false, reason: 'That is the opponent’s Alliance Goal' };
   }
   const top = goal.stack[goal.stack.length - 1];
   if (item.type === 'cup') {
-    if (!top || top.type !== 'pin') return { ok: false, reason: 'A Cup must sit on a Pin' };
+    if (!top || top.type !== 'pin') return { ok: false, reason: 'A Cup must nest on a Placed Pin' };
     return { ok: true };
   }
-  if (top && top.type === 'pin') return { ok: false, reason: 'Add a Cup before the next Pin' };
-  if (pinsIn(goal).length >= OVERRIDE.maxPinsPerGoal[goal.kind]) {
-    return { ok: false, reason: 'Goal is full' };
-  }
+  if (top && top.type === 'pin') return { ok: false, reason: 'Stack a Cup before the next Pin' };
   return { ok: true };
 }
 
-export function yellowOwner(goal: GoalState, toggles: Record<Quadrant, Alliance | null>): Alliance | null {
+/** Pin halves that are visible (Scored) in a goal stack, bottom to top. */
+export function visibleHalves(goal: GoalState): PinColor[] {
+  const out: PinColor[] = [];
+  goal.stack.forEach((item, i) => {
+    if (item.type !== 'pin') return;
+    const below = goal.stack[i - 1];
+    const above = goal.stack[i + 1];
+    // Lower (cone) half sits in the Goal or in the Cup below; hidden if that Cup's opaque half is up.
+    const coneHidden = below?.type === 'cup' && below.opaqueUp;
+    // Upper (prism) half is inside the Cup above; hidden if that Cup's opaque half is down.
+    const prismHidden = above?.type === 'cup' && !above.opaqueUp;
+    if (!coneHidden) out.push(item.cone);
+    if (!prismHidden) out.push(item.prism);
+  });
+  return out;
+}
+
+/** Who owns the yellow halves in a goal. */
+export function yellowOwner(
+  goal: GoalState,
+  toggles: Record<Quadrant, Alliance | null>,
+  midfield: Record<Alliance, number>,
+): Alliance | null {
   if (goal.quadrant) return toggles[goal.quadrant];
-  let red = 0;
-  let blue = 0;
-  for (const q of Object.values(toggles)) {
-    if (q === 'red') red++;
-    if (q === 'blue') blue++;
-  }
-  if (red >= 3) return 'red';
-  if (blue >= 3) return 'blue';
+  // Tall Goal: the alliance with more Robots in the Midfield. ASSUMPTION (see README).
+  if (midfield.red > midfield.blue) return 'red';
+  if (midfield.blue > midfield.red) return 'blue';
   return null;
 }
 
-export function isInMidfield(xIn: number, zIn: number): boolean {
-  return Math.abs(xIn) + Math.abs(zIn) <= OVERRIDE.midfieldHalfDiagonalIn;
+export function isInMidfield(x: number, z: number): boolean {
+  return Math.abs(x) + Math.abs(z) <= OVERRIDE.midfieldHalfDiagonal;
+}
+
+/** Pin points only (used to decide the Autonomous Bonus). */
+export function pinPoints(s: OverrideState): Record<Alliance, number> {
+  const sc = scoreOverride({ ...s, autoBonus: null });
+  return { red: sc.red.alliancePins + sc.red.yellowPins, blue: sc.blue.alliancePins + sc.blue.yellowPins };
+}
+
+export function autoWinner(s: OverrideState): Alliance | 'tie' {
+  const p = pinPoints({ ...s, robotsInMidfield: { red: 0, blue: 0 } });
+  if (p.red > p.blue) return 'red';
+  if (p.blue > p.red) return 'blue';
+  return 'tie';
 }
 
 export function scoreOverride(s: OverrideState): Record<Alliance, AllianceScore> {
@@ -118,20 +147,19 @@ export function scoreOverride(s: OverrideState): Record<Alliance, AllianceScore>
     blue: { alliancePins: 0, yellowPins: 0, midfield: 0, autoBonus: 0, total: 0 },
   };
   for (const g of s.goals) {
-    const owner = yellowOwner(g, s.toggles);
-    for (const pin of pinsIn(g)) {
-      if (pin.up === 'yellow') {
-        if (owner) out[owner].yellowPins += OVERRIDE.points.ownedYellowPin;
+    const owner = yellowOwner(g, s.toggles, s.robotsInMidfield);
+    for (const half of visibleHalves(g)) {
+      if (half === 'yellow') {
+        if (owner) out[owner].yellowPins += OVERRIDE.points.yellowHalf;
       } else {
-        out[pin.up].alliancePins += OVERRIDE.points.alliancePin;
+        out[half].alliancePins += OVERRIDE.points.allianceHalf;
       }
     }
   }
   for (const a of ['red', 'blue'] as const) {
     out[a].midfield = s.robotsInMidfield[a] * OVERRIDE.points.robotInMidfield;
     if (s.autoBonus === a) out[a].autoBonus = OVERRIDE.points.autoBonus;
-    // A tied autonomous splits the bonus (standard V5RC convention).
-    if (s.autoBonus === 'tie') out[a].autoBonus = OVERRIDE.points.autoBonus / 2;
+    if (s.autoBonus === 'tie') out[a].autoBonus = OVERRIDE.points.autoBonusTie;
     const r = out[a];
     r.total = r.alliancePins + r.yellowPins + r.midfield + r.autoBonus;
   }

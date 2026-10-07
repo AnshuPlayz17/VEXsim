@@ -228,3 +228,6 @@ table.runs th { color: var(--muted); font-weight: 600; }
   .logo { font-size: 56px; }
   .checks { grid-template-columns: 1fr; }
 }
+.opt small.statline { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; color: #d7dee9; font-size: 11.5px; }
+.opt small.statline i { font-style: normal; color: var(--muted); margin-right: 3px; }
+.opt small.src { font-style: italic; font-size: 11px; color: #8f9bb0; margin-top: 5px; }

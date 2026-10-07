@@ -201,7 +201,7 @@ export const CONTROL_HELP: { action: string; keyboard: string; gamepad: string }
   { action: 'Outtake / eject (hold)', keyboard: 'V', gamepad: 'LT' },
   { action: 'Score / shoot (hold)', keyboard: 'F', gamepad: 'RB' },
   { action: 'Precision mode (hold)', keyboard: 'Shift', gamepad: 'LB' },
-  { action: 'VEX: flip pin color · FRC: climb (hold)', keyboard: 'R · T', gamepad: 'A' },
+  { action: 'VEX: flip next Cup · FRC: climb (hold)', keyboard: 'R · T', gamepad: 'A' },
   { action: 'VEX: descore top of goal · FRC: climb down', keyboard: 'G', gamepad: 'X' },
   { action: 'VEX: match-load cup · FRC: human player feed', keyboard: 'B', gamepad: 'B' },
   { action: 'FRC manual shooter speed', keyboard: '[ ]', gamepad: 'D-pad ↑ ↓' },

@@ -87,3 +87,75 @@ export function launchSpeedFor(distance: number, heightDelta: number, angle: num
   if (denom <= 0) return null;
   return Math.sqrt((g * distance * distance) / denom);
 }
+
+/**
+ * FUEL aerodynamics: quadratic drag a = -k |v| v with k = ½ ρ Cd A / m
+ * (5.91" foam ball, 0.215 kg, Cd ≈ 0.47). The physics loop applies the same
+ * drag, so solved shots fly where the solver says.
+ */
+export const FUEL_DRAG_K = (0.5 * 1.225 * 0.47 * Math.PI * ((5.91 * 0.0254) / 2) ** 2) / 0.215;
+export const SIM_DT = 1 / 120;
+
+/** Height and vertical speed when a shot reaches horizontal distance `dist`, or null if it never does. */
+export function flightAt(speed: number, angle: number, dist: number, k = FUEL_DRAG_K, g = 9.81, dt = SIM_DT): { y: number; vy: number; t: number } | null {
+  let vx = speed * Math.cos(angle);
+  let vy = speed * Math.sin(angle);
+  let x = 0;
+  let y = 0;
+  let t = 0;
+  while (t < 4) {
+    const v = Math.hypot(vx, vy);
+    // Semi-implicit Euler, like the physics engine: update velocity, then position.
+    vx -= k * v * vx * dt;
+    vy -= (g + k * v * vy) * dt;
+    const nx = x + vx * dt;
+    const ny = y + vy * dt;
+    if (nx >= dist) {
+      const f = (dist - x) / (nx - x);
+      return { y: y + (ny - y) * f, vy, t: t + dt * f };
+    }
+    if (ny < -3 || vx <= 0.05) return null;
+    x = nx;
+    y = ny;
+    t += dt;
+  }
+  return null;
+}
+
+/**
+ * Find a launch angle (within the hood range) and speed that passes through the
+ * target point on the way down, steep enough to drop into the HUB.
+ */
+export function solveShot(
+  dist: number,
+  heightDelta: number,
+  angleMin: number,
+  angleMax: number,
+  speedMax: number,
+  minDescent = (32 * Math.PI) / 180,
+  k = FUEL_DRAG_K,
+): { speed: number; angle: number; time: number } | null {
+  const step = (1.5 * Math.PI) / 180;
+  for (let a = angleMin; a <= angleMax + 1e-9; a += step) {
+    // Height at the target grows with speed (until the arc tops out past it): bisection.
+    let lo = 1;
+    let hi = speedMax;
+    const hiRes = flightAt(hi, a, dist, k);
+    if (!hiRes || hiRes.y < heightDelta) continue;
+    let res = hiRes;
+    for (let i = 0; i < 26; i++) {
+      const mid = (lo + hi) / 2;
+      const r = flightAt(mid, a, dist, k);
+      if (!r || r.y < heightDelta) lo = mid;
+      else {
+        hi = mid;
+        res = r;
+      }
+    }
+    const vx = hi * Math.cos(a);
+    // Descent angle at the target (approximate horizontal speed with the launch value; drag only steepens it).
+    const descent = Math.atan2(-res.vy, vx);
+    if (res.vy < 0 && descent >= minDescent) return { speed: hi, angle: a, time: res.t };
+  }
+  return null;
+}
