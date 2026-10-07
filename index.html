@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Browser driver-practice simulator for VEX V5RC Override and FRC REBUILT." />
+    <title>VEXsim · Driver Practice</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E%3Cpath d='M14 18h10l8 22 8-22h10L37 48h-10z' fill='%23ffe14d'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="viewport"></div>
+
+    <div id="hud" hidden>
+      <div class="scorebar">
+        <div class="side mine"><span class="label">YOU</span><span id="score-mine">0</span></div>
+        <div class="clock"><div id="hud-time">0:00</div><div id="hud-phase"></div></div>
+        <div class="side other"><span class="label">OPP</span><span id="score-other">0</span></div>
+      </div>
+      <div id="hud-title"></div>
+      <div class="panel status" id="hud-status"></div>
+      <div class="panel cargo"><div class="ptitle">Robot</div><div id="hud-cargo"></div><div id="hud-meta"></div></div>
+      <div class="panel breakdown" id="hud-breakdown"></div>
+      <div id="speedo"></div>
+      <div id="toasts"></div>
+      <div id="countdown" hidden></div>
+      <div id="help" class="panel" hidden></div>
+      <div class="hud-hint"><kbd>H</kbd> controls · <kbd>C</kbd> camera · <kbd>Esc</kbd> pause · <kbd>⌫</kbd> restart</div>
+    </div>
+
+    <div id="loading" hidden><div class="spinner"></div>Building the field…</div>
+    <div id="overlay"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
