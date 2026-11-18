@@ -3,7 +3,8 @@ import { RAPIER, initPhysics } from './core/physics';
 import { MatchClock, type Phase } from './core/match';
 import type { Action, ControlState, Input } from './core/input';
 import { CameraRig, CAMERA_LABELS } from './core/camera';
-import { playCue } from './core/audio';
+import { MotorSound, playCue } from './core/audio';
+import { buildVenue, type Scoreboard } from './core/venue';
 import { type GhostTrack, type RunRecord, bestRun, isTimedDrill, loadGhost, loadRuns, saveRun } from './core/stats';
 import { Robot, type RobotConfig } from './robot/robot';
 import { isHolonomic } from './robot/drivetrain';
@@ -61,6 +62,9 @@ export class Session {
   private ctl: ControlState | null = null;
   private resultSent = false;
   helpVisible = false;
+  private scoreboard: Scoreboard | null = null;
+  private motorSound = new MotorSound();
+  private lastLift = 0;
 
   constructor(
     readonly game: GameDef,
@@ -117,38 +121,7 @@ export class Session {
   }
 
   private buildEnvironment(): void {
-    const s = this.scene;
-    s.background = new THREE.Color(0x0d1117);
-    s.fog = new THREE.Fog(0x0d1117, 25, 70);
-    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x30343a, 1.1);
-    s.add(hemi);
-    const sun = new THREE.DirectionalLight(0xffffff, 2.1);
-    const span = Math.max(this.game.fieldX, this.game.fieldZ);
-    sun.position.set(span * 0.18, span * 1.3, span * 0.28);
-    sun.castShadow = this.settings.quality === 'high';
-    sun.shadow.mapSize.set(2048, 2048);
-    const sc = sun.shadow.camera;
-    sc.left = -span * 0.65;
-    sc.right = span * 0.65;
-    sc.top = span * 0.65;
-    sc.bottom = -span * 0.65;
-    sc.near = 0.5;
-    sc.far = span * 3;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.02;
-    s.add(sun);
-    // Arena floor and a few overhead lights for depth.
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(span * 6, span * 6),
-      new THREE.MeshStandardMaterial({ color: 0x1b1f26, roughness: 1 }),
-    );
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.005;
-    floor.receiveShadow = true;
-    s.add(floor);
-    const grid = new THREE.GridHelper(span * 6, 60, 0x2a313b, 0x20262e);
-    grid.position.y = -0.003;
-    s.add(grid);
+    this.scoreboard = buildVenue(this.scene, this.game.fieldX / 2, this.settings.quality);
   }
 
   private spawnGhost(): void {
@@ -296,6 +269,7 @@ export class Session {
     this.runtime.render();
     this.rig.update(this.robot, dt);
     this.updateHud(dt);
+    this.updateSound(dt);
   }
 
   private step(dt: number, ctl: ControlState): void {
@@ -381,6 +355,22 @@ export class Session {
     }
   }
 
+  private updateSound(dt: number): void {
+    if (!this.settings.sound || this.state === 'ended' || this.state === 'paused') {
+      this.motorSound.update(0, 0, 0);
+      return;
+    }
+    this.motorSound.start();
+    const p = this.cfg.power;
+    const vFree = (p.wheelRpm * Math.PI * p.wheelDia) / 60;
+    const speed = Math.min(1, (this.robot.speed + Math.abs(this.robot.cmd.omega) * p.trackWidth * 0.5) / vFree);
+    const effort = this.robot.voltages.reduce((a, v) => a + Math.abs(v), 0) / this.robot.voltages.length;
+    const load = Math.max(0, effort - speed);
+    const lift = dt > 0 ? Math.min(1, Math.abs(this.robot.anim.lift - this.lastLift) / dt / 0.6) : 0;
+    this.lastLift = this.robot.anim.lift;
+    this.motorSound.update(speed, load, lift);
+  }
+
   private updateHud(dt: number): void {
     const clock = this.clock;
     let timeText: string;
@@ -406,6 +396,9 @@ export class Session {
     if (this.state === 'paused') phaseText = 'PAUSED';
     const live = this.runtime.liveScore();
     this.hud.frame(timeText, phaseText, urgent, live.mine, live.other, this.robot.speed);
+    const red = this.station.alliance === 'red' ? live.mine : live.other;
+    const blue = this.station.alliance === 'red' ? live.other : live.mine;
+    this.scoreboard?.update({ time: timeText, phase: phaseText, red, blue, title: `${this.game.program} ${this.game.name}` });
     this.hudTimer -= dt;
     if (this.hudTimer <= 0) {
       this.hudTimer = 0.1;
@@ -465,6 +458,7 @@ export class Session {
   }
 
   dispose(): void {
+    this.motorSound.stop();
     this.runtime?.dispose();
     this.scene.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.InstancedMesh || o instanceof THREE.Line) {

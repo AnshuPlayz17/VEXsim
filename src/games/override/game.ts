@@ -279,7 +279,24 @@ class OverrideRuntime implements GameRuntime {
       g.moveTo(px(0, w), px(-d, h)); g.lineTo(px(0, w), px(d, h));
       g.stroke();
     });
-    b.decal(tiles, HALF * 2, HALF * 2);
+    const tileMesh = b.decal(tiles, HALF * 2, HALF * 2);
+    // Foam tiles: a fine bumpy surface that catches the light.
+    const foam = canvasTexture(256, 256, (g, w, h) => {
+      const img = g.createImageData(w, h);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const v = 110 + Math.random() * 60;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = 255;
+      }
+      g.putImageData(img, 0, 0);
+    });
+    foam.wrapS = foam.wrapT = THREE.RepeatWrapping;
+    foam.repeat.set(36, 36);
+    foam.colorSpace = THREE.NoColorSpace;
+    const tm = tileMesh.material as THREE.MeshStandardMaterial;
+    tm.bumpMap = foam;
+    tm.bumpScale = 0.6;
+    tm.roughness = 0.97;
 
     // Perimeter: steel rails with clear polycarbonate panels, alliance-colored station side.
     const steel = b.mat(0xaab2bc, { metal: 0.8, rough: 0.35 });

@@ -2,6 +2,7 @@ import './style.css';
 import * as THREE from 'three';
 import { loadSettings, type Settings } from './config';
 import { Input } from './core/input';
+import { environmentMap } from './core/venue';
 import { unlockAudio } from './core/audio';
 import { isTimedDrill } from './core/stats';
 import { Session, type SessionResult } from './session';
@@ -93,6 +94,8 @@ class App implements UiHost {
       );
       await session.init();
       session.rig.resize(window.innerWidth, window.innerHeight);
+      session.scene.environment = environmentMap(this.renderer);
+      session.scene.environmentIntensity = 0.55;
       this.session = session;
       (window as unknown as { __vexsim: Session }).__vexsim = session;
       this.hud.show(true);
