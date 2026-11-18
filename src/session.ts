@@ -64,6 +64,7 @@ export class Session {
   helpVisible = false;
   private scoreboard: Scoreboard | null = null;
   private motorSound = new MotorSound();
+  private padWarned = false;
   private lastLift = 0;
 
   constructor(
@@ -239,6 +240,10 @@ export class Session {
     const ctl = this.input.poll(this.cfg.drive);
     this.ctl = ctl;
     for (const a of ctl.actions) this.handleAction(a);
+    if (ctl.needsMapping && !this.padWarned) {
+      this.padWarned = true;
+      this.toast('V5 Controller detected: map it once in Home → Controller setup', 'info');
+    }
 
     if (this.state === 'countdown') {
       const before = Math.ceil(this.countdown);

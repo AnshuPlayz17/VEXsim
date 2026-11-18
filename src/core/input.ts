@@ -1,4 +1,5 @@
 import type { DriveType } from '../robot/drivetrain';
+import { type Binding, activeGamepad, isVexController, profileFor, readAxis } from './gamepad';
 
 /** One-shot actions (edge triggered). */
 export type Action =
@@ -24,6 +25,10 @@ export interface ControlState {
   actions: Set<Action>;
   usingGamepad: boolean;
   gamepadName: string | null;
+  /** A VEX V5 Controller is the active gamepad. */
+  vexController: boolean;
+  /** It hasn't been mapped yet (using the default guess). */
+  needsMapping: boolean;
 }
 
 const KEY_TURN_SCALE = 0.6;
@@ -41,27 +46,12 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyY: 'ghost',
 };
 
-// Standard Gamepad mapping (Xbox / PlayStation / most USB controllers).
-const PAD = {
-  A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START: 9, LS: 10, RS: 11,
-  UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15,
-};
-
-const PAD_ACTIONS: [number, Action][] = [
-  [PAD.A, 'flip'],
-  [PAD.X, 'descore'],
-  [PAD.B, 'feed'],
-  [PAD.Y, 'camera'],
-  [PAD.RS, 'fieldToggle'],
-  [PAD.START, 'pause'],
-  [PAD.BACK, 'restart'],
-  [PAD.LEFT, 'ghost'],
-];
+const ACTIONS: Action[] = ['flip', 'descore', 'feed', 'camera', 'fieldToggle', 'pause', 'restart', 'ghost'];
 
 export class Input {
   private keys = new Set<string>();
   private pressedKeys = new Set<string>();
-  private prevPad: boolean[] = [];
+  private prevPad: Partial<Record<Action, boolean>> = {};
   private lastPadActivity = -Infinity;
   private lastKeyActivity = 0;
   /** When false, game keys are ignored (e.g. while a menu text field is focused). */
@@ -131,12 +121,19 @@ export class Input {
 
     let usingGamepad = false;
     let gamepadName: string | null = null;
-    const pad = firstGamepad();
+    let vexController = false;
+    let needsMapping = false;
+    const pad = activeGamepad();
     if (pad) {
       gamepadName = pad.id;
-      const b = (i: number) => !!pad.buttons[i]?.pressed;
-      const ax = (i: number) => pad.axes[i] ?? 0;
-      const g = { lx: ax(0), ly: -ax(1), rx: ax(2), ry: -ax(3) };
+      vexController = isVexController(pad);
+      const prof = profileFor(pad);
+      needsMapping = vexController && !prof.custom;
+      const btn = (k: Binding) => {
+        const i = prof.buttons[k];
+        return i !== undefined && !!pad.buttons[i]?.pressed;
+      };
+      const g = { lx: readAxis(pad, prof.sticks.lx), ly: readAxis(pad, prof.sticks.ly), rx: readAxis(pad, prof.sticks.rx), ry: readAxis(pad, prof.sticks.ry) };
       const moving = Math.max(Math.abs(g.lx), Math.abs(g.ly), Math.abs(g.rx), Math.abs(g.ry)) > 0.15;
       const anyButton = pad.buttons.some((x) => x.pressed);
       if (moving || anyButton) this.lastPadActivity = performance.now();
@@ -147,35 +144,29 @@ export class Input {
         rx = g.rx;
         ry = g.ry;
       }
-      intake ||= b(PAD.RT);
-      outtake ||= b(PAD.LT);
-      score ||= b(PAD.RB);
-      slow ||= b(PAD.LB);
-      for (const [idx, action] of PAD_ACTIONS) {
-        const now = b(idx);
-        if (now && !this.prevPad[idx]) actions.add(action);
+      intake ||= btn('intake');
+      outtake ||= btn('outtake');
+      score ||= btn('score');
+      slow ||= btn('slow');
+      for (const a of ACTIONS) {
+        const now = btn(a);
+        if (now && !this.prevPad[a]) actions.add(a);
+        this.prevPad[a] = now;
       }
-      this.prevPad = pad.buttons.map((x) => x.pressed);
     }
 
     if (!this.enabled) {
       return {
         lx: 0, ly: 0, rx: 0, ry: 0, intake: false, outtake: false, score: false, slow: false,
-        actions: new Set([...actions].filter((a) => a === 'pause')), usingGamepad, gamepadName,
+        actions: new Set([...actions].filter((a) => a === 'pause')), usingGamepad, gamepadName, vexController, needsMapping,
       };
     }
-    return { lx, ly, rx, ry, intake, outtake, score, slow, actions, usingGamepad, gamepadName };
+    return { lx, ly, rx, ry, intake, outtake, score, slow, actions, usingGamepad, gamepadName, vexController, needsMapping };
   }
 }
 
 function clampUnit(v: number): number {
   return Math.max(-1, Math.min(1, v));
-}
-
-function firstGamepad(): Gamepad | null {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  for (const p of pads) if (p && p.connected) return p;
-  return null;
 }
 
 function isTyping(e: KeyboardEvent): boolean {
@@ -184,21 +175,21 @@ function isTyping(e: KeyboardEvent): boolean {
   return t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA';
 }
 
-export const CONTROL_HELP: { action: string; keyboard: string; gamepad: string }[] = [
-  { action: 'Drive (tank/arcade: W/S throttle, A/D turn)', keyboard: 'W A S D', gamepad: 'Left stick' },
-  { action: 'Rotate (holonomic) / turn', keyboard: '← → (or Q E)', gamepad: 'Right stick' },
-  { action: 'Tank drive', keyboard: 'arcade-style on keys', gamepad: 'Left Y = left, Right Y = right' },
-  { action: 'Intake (hold)', keyboard: 'Space', gamepad: 'RT' },
-  { action: 'Outtake / eject (hold)', keyboard: 'V', gamepad: 'LT' },
-  { action: 'Score / shoot (hold)', keyboard: 'F', gamepad: 'RB' },
-  { action: 'Precision mode (hold)', keyboard: 'Shift', gamepad: 'LB' },
-  { action: 'Flip the next Cup (which Pin half it hides)', keyboard: 'R', gamepad: 'A' },
-  { action: 'Descore the top of a Goal', keyboard: 'G', gamepad: 'X' },
-  { action: 'Match Load from your Loader', keyboard: 'B', gamepad: 'B' },
-  { action: 'Cycle camera', keyboard: 'C', gamepad: 'Y' },
-  { action: 'Field-oriented on/off', keyboard: 'O', gamepad: 'R3' },
-  { action: 'Ghost of best run on/off', keyboard: 'Y', gamepad: 'D-pad ←' },
-  { action: 'Pause', keyboard: 'Esc / P', gamepad: 'Start' },
-  { action: 'Restart', keyboard: 'Backspace', gamepad: 'Back' },
-  { action: 'Show / hide controls', keyboard: 'H', gamepad: '—' },
+export const CONTROL_HELP: { action: string; keyboard: string; gamepad: string; v5: string }[] = [
+  { action: 'Drive (tank/arcade: W/S throttle, A/D turn; X-drive: A/D strafe)', keyboard: 'W A S D', gamepad: 'Left stick', v5: 'Left joystick (Axis 3/4)' },
+  { action: 'Turn / rotate', keyboard: '← → (or Q E)', gamepad: 'Right stick', v5: 'Right joystick (Axis 1/2)' },
+  { action: 'Tank drive', keyboard: 'arcade-style on keys', gamepad: 'Left Y / Right Y', v5: 'Axis 3 / Axis 2' },
+  { action: 'Intake (hold)', keyboard: 'Space', gamepad: 'RT', v5: 'R1' },
+  { action: 'Outtake (hold)', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
+  { action: 'Place on a Goal', keyboard: 'F', gamepad: 'RB', v5: 'L1' },
+  { action: 'Precision mode (hold)', keyboard: 'Shift', gamepad: 'LB', v5: 'L2' },
+  { action: 'Flip the next Cup (which Pin half it hides)', keyboard: 'R', gamepad: 'A', v5: 'A' },
+  { action: 'Descore the top of a Goal', keyboard: 'G', gamepad: 'X', v5: 'X' },
+  { action: 'Match Load at your Loader', keyboard: 'B', gamepad: 'B', v5: 'B' },
+  { action: 'Cycle camera', keyboard: 'C', gamepad: 'Y', v5: 'Y' },
+  { action: 'Field-oriented on/off', keyboard: 'O', gamepad: 'R3', v5: 'Up' },
+  { action: 'Ghost of best run on/off', keyboard: 'Y', gamepad: 'D-pad ←', v5: 'Down' },
+  { action: 'Restart', keyboard: 'Backspace', gamepad: 'Back', v5: 'Left' },
+  { action: 'Pause', keyboard: 'Esc / P', gamepad: 'Start', v5: 'Right' },
+  { action: 'Show / hide controls', keyboard: 'H', gamepad: '—', v5: '—' },
 ];

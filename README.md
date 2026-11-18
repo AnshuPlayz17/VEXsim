@@ -53,7 +53,14 @@ The repository includes `.github/workflows/deploy.yml`. It runs the tests, build
 | Pause · Restart | Esc · Backspace | Start · Back |
 | Controls overlay | H | — |
 
-Any standard USB/Bluetooth controller works (Xbox, PlayStation, Logitech, 8BitDo…). A VEX V5 controller can't connect to a browser, so use a gamepad with the same stick layout.
+Any standard USB/Bluetooth gamepad works (Xbox, PlayStation, Logitech, 8BitDo…).
+
+### Using a real VEX V5 Controller
+1. Plug the V5 Controller into your computer with a micro-USB cable.
+2. Press any button except Power. If its screen lights up, press Power to turn it off; it stays connected over USB. This is the same setup VEX uses for Virtual Skills.
+3. In Chrome, open **Controller setup** on the home screen and click **Map this controller**. Push each joystick and press each button when asked. The mapping is saved for that controller.
+
+Default V5 layout: left/right joysticks drive, R1 intake, R2 outtake, L1 place, L2 precision, A flip Cup, X descore, B match load, Y camera.
 
 ## Robots
 

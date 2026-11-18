@@ -40,7 +40,7 @@ class App implements UiHost {
         this.restart();
       }
     });
-    window.addEventListener('gamepadconnected', (e) => this.hud.toast(`Gamepad connected: ${e.gamepad.id.slice(0, 40)}`, 'good'));
+    window.addEventListener('gamepadconnected', (e) => this.hud.toast(/vex|2888/i.test(e.gamepad.id) ? 'VEX V5 Controller connected' : `Gamepad connected: ${e.gamepad.id.slice(0, 40)}`, 'good'));
     this.ui.home();
     requestAnimationFrame((t) => this.loop(t));
   }

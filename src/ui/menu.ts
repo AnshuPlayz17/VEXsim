@@ -4,6 +4,7 @@ import type { GameDef, GameId, ModeId } from '../games/types';
 import type { RobotConfig } from '../robot/robot';
 import { DRIVE_TYPE_LABELS, type DriveType, driveSummary } from '../robot/drivetrain';
 import { CONTROL_HELP } from '../core/input';
+import { type Binding, MAP_STEPS, PadMapper, activeGamepad, clearProfile, isVexController, profileFor, readAxis } from '../core/gamepad';
 import { CAMERA_LABELS } from '../core/camera';
 import { bestRun, clearStats, isTimedDrill, loadRuns, mean, toCsv, type RunRecord } from '../core/stats';
 import type { SessionResult } from '../session';
@@ -94,6 +95,7 @@ export class Ui {
         </button>
         <nav class="links">
           <button data-nav="stats">📈 Stats &amp; history</button>
+          <button data-nav="pad">🕹 Controller setup</button>
           <button data-nav="controls">🎮 Controls</button>
           <button data-nav="about">📘 Rules, sources &amp; assumptions</button>
         </nav>
@@ -113,6 +115,7 @@ export class Ui {
         const n = b.dataset.nav;
         if (n === 'stats') this.stats();
         else if (n === 'controls') this.controls();
+        else if (n === 'pad') this.padSetup();
         else if (n === 'about') this.about();
         else if (n === 'home') this.home();
         else if (n === 'setup') this.setup();
@@ -170,7 +173,7 @@ export class Ui {
         <header class="bar">
           <button class="ghost-btn" data-nav="home">← Home</button>
           <div class="crumb">${g.program} <b>${g.name}</b> <span>${g.season}</span></div>
-          <button class="ghost-btn" data-nav="controls">Controls</button>
+          <span><button class="ghost-btn" data-nav="pad">Controller</button> <button class="ghost-btn" data-nav="controls">Controls</button></span>
         </header>
         <div class="cols">
           <section>
@@ -196,7 +199,7 @@ export class Ui {
               <option value="brake" ${cfg.power.brake === 'brake' ? 'selected' : ''}>Brake</option>
               <option value="coast" ${cfg.power.brake === 'coast' ? 'selected' : ''}>Coast</option>
             </select></label>
-            ${slider('capacity', 'Pieces held', 1, 4, 1, cfg.capacity)}
+            ${slider('capacity', 'Pieces held (SG6: 1 Pin + 1 Cup max)', 1, 2, 1, Math.min(2, cfg.capacity))}
             <div class="drive-sum"><span><b>${(summary.topSpeed * 3.281).toFixed(1)}</b> ft/s top speed</span><span><b>${(summary.accel / 9.81).toFixed(2)}</b> g launch</span><span><b>${((summary.turnRate * 180) / Math.PI).toFixed(0)}</b>°/s turn</span></div>
             <button class="link" id="reset-robot">Reset to preset</button>
           </section>
@@ -441,9 +444,98 @@ export class Ui {
   }
 
   private controlsTable(): string {
-    return `<table class="controls">${CONTROL_HELP.map(
-      (c) => `<tr><td>${c.action}</td><td><kbd>${c.keyboard}</kbd></td><td><kbd>${c.gamepad}</kbd></td></tr>`,
+    return `<table class="controls"><tr><th></th><th>Keyboard</th><th>Gamepad</th><th>V5 Controller</th></tr>${CONTROL_HELP.map(
+      (c) => `<tr><td>${c.action}</td><td><kbd>${c.keyboard}</kbd></td><td><kbd>${c.gamepad}</kbd></td><td><kbd>${c.v5}</kbd></td></tr>`,
     ).join('')}</table>`;
+  }
+
+  // ------------------------------------------------------- controller setup
+  padSetup(): void {
+    const o = this.show(`
+      <div class="screen doc pad">
+        <header class="bar"><button class="ghost-btn" data-nav="home">← Home</button><div class="crumb"><b>Controller setup</b></div><button class="ghost-btn" data-nav="setup">Setup →</button></header>
+        <section>
+          <h3>Connect a VEX V5 Controller</h3>
+          <ol>
+            <li>Plug the V5 Controller into this computer with a <b>micro-USB</b> cable.</li>
+            <li>Press any button except Power. If its screen lights up, press Power to turn it <b>off</b>; it stays connected over USB.</li>
+            <li>Use <b>Google Chrome</b>, and press a button on the controller so the browser sees it.</li>
+          </ol>
+          <p class="note">Xbox, PlayStation and other standard gamepads work right away. A V5 Controller numbers its joysticks and buttons differently, so map it once below; the mapping is saved for that controller.</p>
+          <div id="pad-status" class="pad-status">Waiting for a controller… press any button on it.</div>
+          <div id="pad-live" class="pad-live"></div>
+          <div class="row-btns">
+            <button id="pad-map" class="primary" disabled>Map this controller</button>
+            <button id="pad-skip" hidden>Skip this one</button>
+            <button id="pad-reset">Reset mapping</button>
+          </div>
+          <div id="pad-prompt" class="pad-prompt" hidden></div>
+          <h3>Check it</h3>
+          <div class="pad-test"><div class="stick"><i id="st-l"></i><span>Left</span></div><div class="stick"><i id="st-r"></i><span>Right</span></div><div id="pad-btns" class="pad-btns"></div></div>
+        </section>
+      </div>`);
+    this.bindNav(o);
+    let mapper: PadMapper | null = null;
+    const status = o.querySelector<HTMLElement>('#pad-status')!;
+    const live = o.querySelector<HTMLElement>('#pad-live')!;
+    const mapBtn = o.querySelector<HTMLButtonElement>('#pad-map')!;
+    const skipBtn = o.querySelector<HTMLButtonElement>('#pad-skip')!;
+    const prompt = o.querySelector<HTMLElement>('#pad-prompt')!;
+    const btns = o.querySelector<HTMLElement>('#pad-btns')!;
+    const dot = (id: string, x: number, y: number) => {
+      const el = o.querySelector<HTMLElement>(id);
+      if (el) el.style.transform = `translate(${x * 34}px, ${-y * 34}px)`;
+    };
+    mapBtn.addEventListener('click', () => {
+      const pad = activeGamepad();
+      if (!pad) return;
+      mapper = new PadMapper(pad);
+      prompt.hidden = false;
+      skipBtn.hidden = false;
+    });
+    skipBtn.addEventListener('click', () => mapper?.skip());
+    o.querySelector('#pad-reset')!.addEventListener('click', () => {
+      const pad = activeGamepad();
+      if (pad) clearProfile(pad);
+      mapper = null;
+      prompt.hidden = true;
+      skipBtn.hidden = true;
+    });
+    const tick = () => {
+      if (!document.body.contains(o) || !o.querySelector('#pad-status')) return;
+      const pad = activeGamepad();
+      if (!pad) {
+        status.textContent = 'Waiting for a controller… press any button on it.';
+        mapBtn.disabled = true;
+      } else {
+        const prof = profileFor(pad);
+        const vex = isVexController(pad);
+        status.innerHTML = `${vex ? '<b class="ok">VEX V5 Controller</b>' : '<b class="ok">Gamepad</b>'} connected: <code>${escapeHtml(pad.id.slice(0, 70))}</code> · ${prof.custom ? 'mapped ✔' : vex ? '<span class="warn">not mapped yet</span>' : 'standard layout'}`;
+        mapBtn.disabled = false;
+        live.innerHTML = `<div class="axes">${pad.axes.map((v, i) => `<div><span>axis ${i}</span><div class="bar"><b style="left:${50 + v * 50}%"></b></div></div>`).join('')}</div>
+          <div class="buttons">${pad.buttons.map((b, i) => `<span class="${b.pressed ? 'on' : ''}">${i}</span>`).join('')}</div>`;
+        if (mapper) {
+          mapper.poll();
+          prompt.innerHTML = mapper.done ? '✔ Mapping saved. Try the sticks below.' : `<b>Step ${mapper.step + 1} / ${MAP_STEPS.length}:</b> ${mapper.prompt}`;
+          if (mapper.done) {
+            mapper.save();
+            mapper = null;
+            skipBtn.hidden = true;
+          }
+        }
+        dot('#st-l', readAxis(pad, prof.sticks.lx), readAxis(pad, prof.sticks.ly));
+        dot('#st-r', readAxis(pad, prof.sticks.rx), readAxis(pad, prof.sticks.ry));
+        btns.innerHTML = MAP_STEPS.filter((s) => s.kind === 'button')
+          .map((s) => {
+            const i = prof.buttons[s.id as Binding];
+            const on = i !== undefined && pad.buttons[i]?.pressed;
+            return `<span class="${on ? 'on' : ''}">${s.id}</span>`;
+          })
+          .join('');
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
 
   controls(): void {
@@ -457,14 +549,14 @@ export class Ui {
             <li><b>Tank</b>: left stick Y drives the left side, right stick Y the right side (keyboard: W/S and ↑/↓).</li>
             <li><b>Arcade</b>: one stick. Y is throttle, X is turn.</li>
             <li><b>Split arcade</b>: left stick throttle, right stick turn. The most common VEX setup.</li>
-            <li><b>Swerve / X-drive</b>: left stick translates, right stick X rotates. Field-oriented is on by default and is relative to <i>your driver station</i>, so push the stick away from you and the robot moves away from you whichever way it faces.</li>
+            <li><b>X-drive</b>: left stick translates, right stick X rotates. Field-oriented is on by default and is relative to <i>your driver station</i>, so push the stick away from you and the robot moves away from you whichever way it faces.</li>
           </ul>
           <h3>Tips</h3>
           <ul>
             <li>Practice from the <b>Driver station</b> camera. It's what you'll see at competition. Use the chase cam to learn a route, then switch back.</li>
-            <li>Hold <kbd>Shift</kbd> / <kbd>LB</kbd> for precision mode when lining up on a goal or the TOWER.</li>
+            <li>Hold <kbd>Shift</kbd> / <kbd>LB</kbd> / <kbd>L2</kbd> for precision mode when lining up on a Goal.</li>
             <li>Turn on <b>Race my best-run ghost</b>: a translucent copy of your best run drives alongside you.</li>
-            <li>The VEX V5 controller can't talk to a browser. Use any USB/Bluetooth gamepad with the same stick layout.</li>
+            <li><b>Use your real V5 Controller:</b> plug it into the computer with a micro-USB cable, press any button, then turn it <i>off</i> (like VEX's Virtual Skills), and use Chrome. Then open <b>Controller setup</b> once to map its joysticks and buttons.</li>
           </ul>
         </section>
       </div>`);

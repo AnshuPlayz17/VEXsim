@@ -89,7 +89,7 @@ const PRESETS: RobotConfig[] = [
     drive: 'tank',
     power: { motors: 6, cartridge: 'blue', wheelRpm: 450, wheelDia: 3.25 * IN, mass: 14 * LB, mu: 0.9, trackWidth: 12.5 * IN, wheelbase: 11 * IN, scrub: 0.22, brake: 'brake' },
     capacity: 2, intakeWidth: 0.2, intakeReach: 0.12, liftTime: 0.9,
-    stats: { Lift: 'DR4B to ~42"', Holds: 'claw + 1 in the tray' },
+    stats: { Lift: 'DR4B to ~42"', Holds: '1 Pin + 1 Cup (SG6 max)' },
     model: vexModel({ team: '2026A', length: 15, width: 15, drive: 'tank6', wheel: 3.25, cartridge: 'blue', lift: 'dr4b', liftMin: 3, liftMax: 42, rollers: true, accent: 0xe8862a }),
   },
   {
@@ -113,7 +113,7 @@ const PRESETS: RobotConfig[] = [
     drive: 'splitArcade',
     power: { motors: 6, cartridge: 'blue', wheelRpm: 600, wheelDia: 2.75 * IN, mass: 13 * LB, mu: 0.9, trackWidth: 12.5 * IN, wheelbase: 11 * IN, scrub: 0.22, brake: 'brake' },
     capacity: 2, intakeWidth: 0.26, intakeReach: 0.14, liftTime: 0.8,
-    stats: { Lift: 'Chain-bar to ~32"', Holds: 'claw + 1 in the rollers' },
+    stats: { Lift: 'Chain-bar to ~32"', Holds: '1 Pin + 1 Cup (SG6 max)' },
     model: vexModel({ team: '2026C', length: 15, width: 15, drive: 'tank6', wheel: 2.75, cartridge: 'blue', lift: 'chainbar', liftMin: 3, liftMax: 32, rollers: true, accent: 0x7b4fd6 }),
   },
   {
@@ -313,8 +313,22 @@ class OverrideRuntime implements GameRuntime {
       if (color) b.box({ center: [cx, WALL_H + 0.006, cz], size: [w * 1.5, 0.012, d], color, collider: false });
       b.solid([cx, 0.5, cz], [w, 1, d]);
     }
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      b.box({ center: [sx * (HALF + t / 2), WALL_H / 2, sz * (HALF + t / 2)], size: [t * 1.6, WALL_H + 0.01, t * 1.6], material: steel, collider: false });
+    // Vertical posts at every 2 ft tile seam hold the panels; a rail caps the top.
+    const post = b.mat(0x9ea6b0, { metal: 0.85, rough: 0.3 });
+    for (let i = -3; i <= 3; i++) {
+      const p = i * 2 * FT;
+      for (const s of [-1, 1]) {
+        b.box({ center: [p, WALL_H / 2, s * (HALF + t / 2)], size: [1 * IN, WALL_H, t * 1.4], material: post, collider: false });
+        b.box({ center: [s * (HALF + t / 2), WALL_H / 2, p], size: [t * 1.4, WALL_H, 1 * IN], material: post, collider: false });
+      }
+    }
+    for (const [cx, cz, w, d] of [
+      [0, -HALF - t / 2, HALF * 2 + 2 * t, t * 1.6],
+      [0, HALF + t / 2, HALF * 2 + 2 * t, t * 1.6],
+      [-HALF - t / 2, 0, t * 1.6, HALF * 2],
+      [HALF + t / 2, 0, t * 1.6, HALF * 2],
+    ] as const) {
+      b.box({ center: [cx, WALL_H - 0.01, cz], size: [w, 0.02, d], material: steel, collider: false });
     }
 
     // Goals: octagonal tapered towers with a receptacle on top.
@@ -586,6 +600,8 @@ class OverrideRuntime implements GameRuntime {
       for (const p of this.pieces) {
         if (p.state !== 'loose') continue;
         const t = p.body.translation();
+        // SG6: a robot may hold at most one Pin and one Cup.
+        if (this.held.some((h) => h.kind === p.kind)) continue;
         if (robot.inIntake(t.x, t.z, t.y, 0.3)) {
           this.hold(p);
           this.intakeCooldown = 0.35;
@@ -753,6 +769,11 @@ class OverrideRuntime implements GameRuntime {
     }
     if (this.held.length >= r.cfg.capacity) {
       this.ctx.toast('Robot is full', 'bad');
+      return;
+    }
+    const nextKind = q[0] === 'cup' ? 'cup' : 'pin';
+    if (this.held.some((h) => h.kind === nextKind)) {
+      this.ctx.toast(`SG6: you can only hold one ${nextKind === 'cup' ? 'Cup' : 'Pin'} at a time`, 'bad');
       return;
     }
     const next = q.shift()!;
