@@ -12,7 +12,8 @@ A browser-based 3D driving simulator for the **VEX V5 Robotics Competition 2026�
 - **Sound.** Drive motors whine with speed and load, the lift hums, and the match buzzers play.
 - **Practice modes.** Full match, driver period, 60 s driver skills, a timed placement sprint, a gate course and free practice.
 - **Driver feedback.** Cycle times, personal bests, a ghost of your best run to race, a post-run path map, run history and CSV export.
-- **Four cameras.** Driver station, chase cam, top-down and robot POV.
+- **Four cameras, switchable any time.** Driver station, follow robot (drag to orbit, scroll to zoom), top-down and robot POV, from on-screen buttons or `C`.
+- **Controls always in view.** A legend along the bottom of the screen shows the key controls for whatever you're using (keyboard, gamepad or V5 Controller). `H` shows them all.
 
 ## Play locally
 
@@ -73,6 +74,7 @@ Built from real V5 parts: aluminum C-channel, 11 W smart motors with their gear 
 | Clawbot “Flex” | VEX’s official Override Hero Bot (arm + claw) | 4-motor 200 RPM | Single arm to ~26″ |
 | Chain-bar + roller intake | Forklift / chain-bar stacker concepts from the Override design threads | 6-motor 600 RPM | Chain-bar to ~32″ |
 | X-drive arm bot | Holonomic “S-bot” designs | 4-motor X-drive | Arm to ~30″ |
+| Cascade + horizontal intake | This season's cascade reveals (ACE-style cascade, Formula 5) | 6-motor 450 RPM tank | 3-stage cascade to ~44″ |
 
 Placing takes real time: the lift travels to the top of the stack, and the wrist flips the Pin tip-down. Stacks taller than your lift can reach are rejected.
 

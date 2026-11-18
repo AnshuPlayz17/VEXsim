@@ -5,23 +5,74 @@ import type { Robot } from '../robot/robot';
 
 export const CAMERA_LABELS: Record<CameraMode, string> = {
   driver: 'Driver station',
-  follow: 'Chase cam',
+  follow: 'Follow robot',
   top: 'Top-down',
   pov: 'Robot POV',
 };
-const ORDER: CameraMode[] = ['driver', 'follow', 'top', 'pov'];
+export const CAMERA_ORDER: CameraMode[] = ['driver', 'follow', 'top', 'pov'];
+const ORDER = CAMERA_ORDER;
 
 export class CameraRig {
   readonly camera = new THREE.PerspectiveCamera(50, 1, 0.03, 200);
   private pos = new THREE.Vector3();
   private look = new THREE.Vector3();
   private initialized = false;
+  /** Mouse orbit around the robot in Follow view. */
+  private orbitYaw = 0;
+  private orbitPitch = 0;
+  private zoom = 1;
 
   constructor(
     public mode: CameraMode,
     private station: DriverStation,
     private field: { x: number; z: number },
   ) {}
+
+  setMode(m: CameraMode): void {
+    this.mode = m;
+    this.initialized = false;
+  }
+
+  /** Drag to orbit, wheel to zoom (Follow view); double-click recenters. */
+  attach(el: HTMLElement): () => void {
+    let dragging = false;
+    let lx = 0;
+    let ly = 0;
+    const down = (e: PointerEvent) => {
+      dragging = true;
+      lx = e.clientX;
+      ly = e.clientY;
+    };
+    const move = (e: PointerEvent) => {
+      if (!dragging || this.mode !== 'follow') return;
+      this.orbitYaw -= (e.clientX - lx) * 0.006;
+      this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + (e.clientY - ly) * 0.004, -0.5, 0.9);
+      lx = e.clientX;
+      ly = e.clientY;
+    };
+    const up = () => (dragging = false);
+    const wheel = (e: WheelEvent) => {
+      if (this.mode !== 'follow') return;
+      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 1.1 : 0.9), 0.5, 3);
+    };
+    const dbl = () => {
+      this.orbitYaw = 0;
+      this.orbitPitch = 0;
+      this.zoom = 1;
+    };
+    el.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    el.addEventListener('wheel', wheel, { passive: true });
+    el.addEventListener('dblclick', dbl);
+    return () => {
+      el.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      el.removeEventListener('wheel', wheel);
+      el.removeEventListener('dblclick', dbl);
+    };
+  }
 
   next(): CameraMode {
     this.mode = ORDER[(ORDER.indexOf(this.mode) + 1) % ORDER.length];
@@ -54,10 +105,13 @@ export class CameraRig {
         break;
       }
       case 'follow': {
-        const back = size * 2.6 + 0.4;
-        const h = size * 1.6 + 0.35;
+        const dist = (size * 3 + 0.5) * this.zoom;
+        const pitch = 0.5 + this.orbitPitch;
+        const yawC = robot.heading + this.orbitYaw;
         const rf = new THREE.Vector3(Math.cos(robot.heading), 0, -Math.sin(robot.heading));
-        desiredPos.set(robot.x - rf.x * back, h + robot.mesh.position.y, robot.z - rf.z * back);
+        const back = Math.cos(pitch) * dist;
+        const h = Math.sin(pitch) * dist + 0.1;
+        desiredPos.set(robot.x - Math.cos(yawC) * back, h + robot.mesh.position.y, robot.z + Math.sin(yawC) * back);
         desiredLook.set(robot.x + rf.x * size * 2, 0.1 + robot.mesh.position.y, robot.z + rf.z * size * 2);
         fov = 60;
         snap = 5;

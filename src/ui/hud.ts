@@ -3,6 +3,23 @@ import type { Alliance } from '../robot/robot';
 import { CONTROL_HELP } from '../core/input';
 import { DRIVE_TYPE_LABELS, type DriveType } from '../robot/drivetrain';
 import { mean } from '../core/stats';
+import { CAMERA_LABELS, CAMERA_ORDER } from '../core/camera';
+import type { CameraMode } from '../config';
+
+export type Device = 'keyboard' | 'gamepad' | 'v5';
+
+/** The few controls a driver needs mid-match, per input device. */
+const QUICK: { what: string; keyboard: string; gamepad: string; v5: string }[] = [
+  { what: 'Drive', keyboard: 'W A S D', gamepad: 'Sticks', v5: 'Joysticks' },
+  { what: 'Intake', keyboard: 'Space', gamepad: 'RT', v5: 'R1' },
+  { what: 'Place on Goal', keyboard: 'F', gamepad: 'RB', v5: 'L1' },
+  { what: 'Drop', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
+  { what: 'Flip Cup', keyboard: 'R', gamepad: 'A', v5: 'A' },
+  { what: 'Match Load', keyboard: 'B', gamepad: 'B', v5: 'B' },
+  { what: 'Precision', keyboard: 'Shift', gamepad: 'LB', v5: 'L2' },
+  { what: 'Camera', keyboard: 'C', gamepad: 'Y', v5: 'Y' },
+  { what: 'Pause', keyboard: 'Esc', gamepad: 'Start', v5: 'Right' },
+];
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -29,13 +46,38 @@ export class Hud {
   private toasts = $('toasts');
   private count = $('countdown');
   private help = $('help');
+  private camBar = $('camera-bar');
+  private quick = $('quick-controls');
+  private device: Device | null = null;
+  onCamera: (m: CameraMode) => void = () => {};
   private lastPanels = '';
   onRestart: () => void = () => {};
 
   constructor() {
+    this.camBar.innerHTML = CAMERA_ORDER.map((m) => `<button data-cam="${m}">${CAMERA_LABELS[m]}</button>`).join('');
+    this.camBar.querySelectorAll<HTMLButtonElement>('[data-cam]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onCamera(b.dataset.cam as CameraMode);
+        b.blur();
+      }),
+    );
     this.help.innerHTML = `<div class="ptitle">Controls</div><table>${CONTROL_HELP.map(
       (c) => `<tr><td>${c.action}</td><td><kbd>${c.keyboard}</kbd></td><td><kbd>${c.gamepad}</kbd></td></tr>`,
     ).join('')}</table>`;
+  }
+
+  setCamera(m: CameraMode): void {
+    this.camBar.querySelectorAll<HTMLElement>('[data-cam]').forEach((b) => b.classList.toggle('on', b.dataset.cam === m));
+    this.camBar.dataset.hint = m === 'follow' ? 'Drag to orbit · scroll to zoom · double-click to reset' : '';
+  }
+
+  /** Bottom legend, relabelled for whatever the driver is using. */
+  setDevice(d: Device): void {
+    if (d === this.device) return;
+    this.device = d;
+    const name = d === 'v5' ? 'V5 Controller' : d === 'gamepad' ? 'Gamepad' : 'Keyboard';
+    this.quick.innerHTML = `<span class="qc-dev">${name}</span>${QUICK.map((q) => `<span><kbd>${q[d]}</kbd>${q.what}</span>`).join('')}<span class="qc-more"><kbd>H</kbd>all controls</span>`;
   }
 
   show(v: boolean): void {

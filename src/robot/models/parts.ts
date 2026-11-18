@@ -136,7 +136,9 @@ export function v5Motor(ctx: ModelCtx, parent: THREE.Object3D, x: number, y: num
 export function v5Brain(ctx: ModelCtx, parent: THREE.Object3D, x: number, y: number, z: number): THREE.Group {
   const g = new THREE.Group();
   mesh(ctx, new THREE.BoxGeometry(4.4 * IN, 1.1 * IN, 3.2 * IN), mat(ctx, 0x16171a, { rough: 0.5 }), g);
-  mesh(ctx, new THREE.BoxGeometry(3.4 * IN, 0.02 * IN, 2.2 * IN), mat(ctx, 0x0b2a4a, { emissive: 0x0a3a6a, rough: 0.2 }), g, -0.3 * IN, 0.56 * IN, 0);
+  const scr = mesh(ctx, new THREE.PlaneGeometry(3.4 * IN, 2.2 * IN), new THREE.MeshStandardMaterial({ map: brainScreenTexture(), emissive: 0xffffff, emissiveMap: brainScreenTexture(), emissiveIntensity: 0.6, roughness: 0.2 }), g, -0.3 * IN, 0.56 * IN, 0);
+  scr.rotation.x = -Math.PI / 2;
+  scr.rotation.z = -Math.PI / 2;
   mesh(ctx, new THREE.BoxGeometry(0.5 * IN, 0.05 * IN, 0.5 * IN), mat(ctx, 0xc0c0c0, { metal: 0.6 }), g, 1.7 * IN, 0.56 * IN, 1 * IN);
   g.position.set(x, y, z);
   parent.add(g);
@@ -152,7 +154,7 @@ export function v5Battery(ctx: ModelCtx, parent: THREE.Object3D, x: number, y: n
 export function omniWheel(ctx: ModelCtx, parent: THREE.Object3D, dia: number, width: number, x: number, y: number, z: number, o: { hub?: number; roller?: number; rollers?: number } = {}): THREE.Group {
   const g = new THREE.Group();
   const r = dia / 2;
-  const hub = mesh(ctx, new THREE.CylinderGeometry(r * 0.78, r * 0.78, width * 0.8, 20), mat(ctx, o.hub ?? 0x3a3d42, { rough: 0.5, metal: 0.3 }), g);
+  const hub = mesh(ctx, new THREE.CylinderGeometry(r * 0.78, r * 0.78, width * 0.8, 20), mat(ctx, o.hub ?? 0xa9afb7, { rough: 0.55, metal: 0.1 }), g);
   hub.rotation.x = Math.PI / 2;
   const n = o.rollers ?? 12;
   const rollGeo = new THREE.CylinderGeometry(r * 0.17, r * 0.17, (2 * Math.PI * r) / n * 0.85, 8);
@@ -234,4 +236,78 @@ export function disposeGroup(root: THREE.Object3D): void {
   root.traverse((o) => {
     if (o instanceof THREE.Mesh) o.geometry.dispose();
   });
+}
+
+/** Smart cable: a sagging dark wire between two points (robot-local). */
+export function cable(ctx: ModelCtx, parent: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3, sag = 0.4 * IN, color = 0x1b1c1f): THREE.Mesh {
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  mid.y -= sag;
+  const curve = new THREE.CatmullRomCurve3([a, a.clone().lerp(mid, 0.5), mid, b.clone().lerp(mid, 0.5), b]);
+  const geo = new THREE.TubeGeometry(curve, 16, 0.06 * IN, 5, false);
+  const m = mesh(ctx, geo, mat(ctx, color, { rough: 0.6 }), parent);
+  m.castShadow = false;
+  return m;
+}
+
+/** Latex rubber band stretched between two points (lift assist). */
+export function rubberBand(ctx: ModelCtx, parent: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3): THREE.Mesh {
+  const len = Math.max(0.001, a.distanceTo(b));
+  const m = mesh(ctx, new THREE.CylinderGeometry(0.05 * IN, 0.05 * IN, len, 5), mat(ctx, 0xd9c08a, { rough: 0.8 }), parent);
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+  m.castShadow = false;
+  return m;
+}
+
+/** Spur gear (VEX high-strength gear look), axle along Z. */
+export function gear(ctx: ModelCtx, parent: THREE.Object3D, radius: number, teeth: number, x: number, y: number, z: number, color = 0x2a2c30): THREE.Mesh {
+  const shape = new THREE.Shape();
+  const inner = radius * 0.88;
+  for (let i = 0; i < teeth * 2; i++) {
+    const a = (i / (teeth * 2)) * Math.PI * 2;
+    const r = i % 2 === 0 ? radius : inner;
+    if (i === 0) shape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, radius * 0.25, 0, Math.PI * 2, true);
+  shape.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.25 * IN, bevelEnabled: false });
+  geo.translate(0, 0, -0.125 * IN);
+  return mesh(ctx, geo, mat(ctx, color, { rough: 0.5, metal: 0.2 }), parent, x, y, z);
+}
+
+/** Nylock nut / screw head, normal along Z. */
+export function nut(ctx: ModelCtx, parent: THREE.Object3D, x: number, y: number, z: number, axis: 'x' | 'y' | 'z' = 'z'): THREE.Mesh {
+  const m = mesh(ctx, new THREE.CylinderGeometry(0.17 * IN, 0.17 * IN, 0.12 * IN, 6), mat(ctx, 0x8c9198, { metal: 0.85, rough: 0.3 }), parent, x, y, z);
+  if (axis === 'z') m.rotation.x = Math.PI / 2;
+  if (axis === 'x') m.rotation.z = Math.PI / 2;
+  m.castShadow = false;
+  return m;
+}
+
+let brainTex: THREE.Texture | null = null;
+/** The V5 Brain's touchscreen running a driver program. */
+export function brainScreenTexture(): THREE.Texture {
+  if (brainTex) return brainTex;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 160;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#0c1a2c';
+  g.fillRect(0, 0, 256, 160);
+  g.fillStyle = '#1e5aa8';
+  g.fillRect(0, 0, 256, 26);
+  g.fillStyle = '#ffffff';
+  g.font = 'bold 16px Arial';
+  g.fillText('Driver Control', 10, 18);
+  g.fillStyle = '#5be06b';
+  g.fillRect(206, 7, 38, 12);
+  g.font = '13px monospace';
+  g.fillStyle = '#cfe3ff';
+  ['Drive  L 98%  R 98%', 'Lift   41.2°', 'Claw   CLOSED', 'Battery 12.6V'].forEach((t, i) => g.fillText(t, 12, 52 + i * 24));
+  brainTex = new THREE.CanvasTexture(c);
+  brainTex.colorSpace = THREE.SRGBColorSpace;
+  return brainTex;
 }

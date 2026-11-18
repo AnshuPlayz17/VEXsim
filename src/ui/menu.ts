@@ -9,6 +9,7 @@ import { CAMERA_LABELS } from '../core/camera';
 import { bestRun, clearStats, isTimedDrill, loadRuns, mean, toCsv, type RunRecord } from '../core/stats';
 import type { SessionResult } from '../session';
 import { escapeHtml } from './hud';
+import { robotThumb } from './thumbs';
 
 export interface UiHost {
   settings: Settings;
@@ -138,27 +139,21 @@ export class Ui {
     const runs = loadRuns();
     const best = bestRun(runs, g.id, mode);
     const summary = driveSummary(cfg.power, cfg.length, cfg.width);
+    const modeDef = g.modes.find((m) => m.id === mode)!;
 
-    const modes = g.modes
-      .map(
-        (m) => `
-        <label class="opt ${m.id === mode ? 'on' : ''}">
-          <input type="radio" name="mode" value="${m.id}" ${m.id === mode ? 'checked' : ''}>
-          <div><b>${m.label}</b><small>${m.description}</small><small class="pb">Best: ${fmtResult(bestRun(runs, g.id, m.id))}</small></div>
-        </label>`,
-      )
-      .join('');
+    const chips = (name: string, items: { v: string; label: string }[], cur: string) =>
+      `<div class="chips">${items.map((i) => `<button class="chip-btn ${i.v === cur ? 'on' : ''}" data-${name}="${i.v}">${i.label}</button>`).join('')}</div>`;
     const robots = g.presets
-      .map(
-        (p) => `
-        <label class="opt ${p.id === preset.id ? 'on' : ''}">
-          <input type="radio" name="preset" value="${p.id}" ${p.id === preset.id ? 'checked' : ''}>
-          <div><b>${p.name}</b><small>${p.description}</small>
-          <small class="spec">${(p.length / 0.0254).toFixed(0)}″ × ${(p.width / 0.0254).toFixed(0)}″ · ${p.power.motors} motors · ${p.power.wheelRpm} rpm on ${(p.power.wheelDia / 0.0254).toFixed(2)}″ wheels · ${(p.power.mass / 0.4536).toFixed(1)} lb</small>
-          ${p.id === preset.id && p.stats ? `<small class="statline">${Object.entries(p.stats).map(([k, v]) => `<span><i>${k}</i> ${v}</span>`).join('')}</small>` : ''}
-          ${p.id === preset.id && p.source ? `<small class="src">${p.source}</small>` : ''}</div>
-        </label>`,
-      )
+      .map((p) => {
+        const thumb = robotThumb(p, station.alliance);
+        const sp = driveSummary(p.power, p.length, p.width);
+        return `
+        <button class="robot-card ${p.id === preset.id ? 'on' : ''}" data-preset="${p.id}">
+          ${thumb ? `<img src="${thumb}" alt="">` : '<div class="noimg"></div>'}
+          <b>${p.name}</b>
+          <small>${(sp.topSpeed * 3.281).toFixed(1)} ft/s · ${p.stats?.Lift ?? ''}</small>
+        </button>`;
+      })
       .join('');
     const driveOpts = (Object.keys(DRIVE_TYPE_LABELS) as DriveType[])
       .map((d) => `<option value="${d}" ${d === cfg.drive ? 'selected' : ''}>${DRIVE_TYPE_LABELS[d]}</option>`)
@@ -167,91 +162,92 @@ export class Ui {
       <label class="slider"><span>${label}</span><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}${unit}</output></label>`;
     const check = (id: keyof Settings, label: string) =>
       `<label class="check"><input type="checkbox" data-bool="${id}" ${s[id] ? 'checked' : ''}> ${label}</label>`;
+    const sel = (id: string, label: string, opts: [string | number, string][], cur: string | number) =>
+      `<label class="sel"><span>${label}</span><select id="${id}">${opts.map(([v, t]) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
 
     const o = this.show(`
-      <div class="screen setup">
+      <div class="screen setup quick">
         <header class="bar">
           <button class="ghost-btn" data-nav="home">← Home</button>
-          <div class="crumb">${g.program} <b>${g.name}</b> <span>${g.season}</span></div>
-          <span><button class="ghost-btn" data-nav="pad">Controller</button> <button class="ghost-btn" data-nav="controls">Controls</button></span>
+          <div class="crumb">${g.program} <b>${g.name}</b></div>
+          <span><button class="ghost-btn" data-nav="pad">🕹 Controller</button> <button class="ghost-btn" data-nav="controls">🎮 Controls</button></span>
         </header>
-        <div class="cols">
-          <section>
-            <h3>Mode</h3>
-            <div class="opts">${modes}</div>
-          </section>
-          <section>
-            <h3>Robot</h3>
-            <div class="opts">${robots}</div>
-            <h4>Tune this robot</h4>
-            <label class="sel"><span>Drivetrain</span><select id="drive">${driveOpts}</select></label>
-            <label class="sel"><span>Drive motors</span><select id="motors">${[4, 6, 8]
-              .map((n) => `<option value="${n}" ${n === cfg.power.motors ? 'selected' : ''}>${n} × 11W</option>`)
-              .join('')}</select></label>
-            <label class="sel"><span>Wheel speed</span><select id="rpm">${[200, 257, 300, 333, 360, 400, 450, 480, 600]
-              .map((n) => `<option value="${n}" ${n === cfg.power.wheelRpm ? 'selected' : ''}>${n} rpm</option>`)
-              .join('')}</select></label>
-            <label class="sel"><span>Wheels</span><select id="wheel">${[2.75, 3.25, 4]
-              .map((n) => `<option value="${n}" ${Math.abs(n - cfg.power.wheelDia / 0.0254) < 0.01 ? 'selected' : ''}>${n}″</option>`)
-              .join('')}</select></label>
-            ${slider('weight', 'Robot weight', 8, 22, 0.5, +(cfg.power.mass / 0.4536).toFixed(1), ' lb')}
-            <label class="sel"><span>Stop mode</span><select id="brake">
-              <option value="brake" ${cfg.power.brake === 'brake' ? 'selected' : ''}>Brake</option>
-              <option value="coast" ${cfg.power.brake === 'coast' ? 'selected' : ''}>Coast</option>
-            </select></label>
-            ${slider('capacity', 'Pieces held (SG6: 1 Pin + 1 Cup max)', 1, 2, 1, Math.min(2, cfg.capacity))}
-            <div class="drive-sum"><span><b>${(summary.topSpeed * 3.281).toFixed(1)}</b> ft/s top speed</span><span><b>${(summary.accel / 9.81).toFixed(2)}</b> g launch</span><span><b>${((summary.turnRate * 180) / Math.PI).toFixed(0)}</b>°/s turn</span></div>
-            <button class="link" id="reset-robot">Reset to preset</button>
-          </section>
-          <section>
-            <h3>Driver station</h3>
-            <label class="sel"><span>Station</span><select id="station">${stationList
-              .map((st) => `<option value="${st.id}" ${st.id === station.id ? 'selected' : ''}>${st.label}</option>`)
-              .join('')}</select></label>
-            <label class="sel"><span>Start position</span><select id="start">${poses
-              .map((p, i) => `<option value="${i}" ${i === s.startIndex ? 'selected' : ''}>${p.label}</option>`)
-              .join('')}</select></label>
-            <label class="sel"><span>Camera</span><select id="camera">${Object.entries(CAMERA_LABELS)
-              .map(([k, v]) => `<option value="${k}" ${k === s.camera ? 'selected' : ''}>${v}</option>`)
-              .join('')}</select></label>
-            <h4>Driver feel</h4>
-            ${slider('deadzone', 'Stick deadzone', 0, 0.3, 0.01, s.tuning.deadzone)}
-            ${slider('expo', 'Drive expo (curve)', 0, 1, 0.05, s.tuning.expo)}
-            ${slider('turnExpo', 'Turn expo', 0, 1, 0.05, s.tuning.turnExpo)}
-            ${slider('slowScale', 'Precision-mode speed', 0.1, 1, 0.05, s.tuning.slowScale)}
-            <div class="checks">
-              ${check('fieldOriented', 'Field-oriented (holonomic)')}
-              ${check('showGhost', 'Race my best-run ghost')}
-              ${check('countdown', '3-2-1 countdown')}
-              ${check('sound', 'Sound cues')}
-            </div>
-            <label class="sel"><span>Graphics</span><select id="quality">
-              <option value="high" ${s.quality === 'high' ? 'selected' : ''}>High (shadows)</option>
-              <option value="low" ${s.quality === 'low' ? 'selected' : ''}>Fast (no shadows)</option>
-            </select></label>
-          </section>
-        </div>
+
+        <section class="step">
+          <h3>Mode</h3>
+          ${chips('mode', g.modes.map((m) => ({ v: m.id, label: m.label })), mode)}
+          <p class="hint">${modeDef.description} · Best: <b>${fmtResult(best)}</b></p>
+        </section>
+
+        <section class="step">
+          <h3>Robot</h3>
+          <div class="robot-grid">${robots}</div>
+          <p class="hint">${preset.description}${preset.source ? ` <i>${preset.source}</i>` : ''}</p>
+        </section>
+
+        <section class="step two">
+          <div>
+            <h3>Play as</h3>
+            ${chips('station', stationList.map((st) => ({ v: st.id, label: st.label })), station.id)}
+          </div>
+          <div>
+            <h3>View</h3>
+            ${chips('camera', Object.entries(CAMERA_LABELS).map(([v, label]) => ({ v, label })), s.camera)}
+            <p class="hint">You can switch views any time during play with the buttons on screen or <kbd>C</kbd>.</p>
+          </div>
+        </section>
+
+        <details class="advanced">
+          <summary>Advanced: start position, robot build, driver feel, graphics</summary>
+          <div class="cols">
+            <section>
+              <h4>Start</h4>
+              ${sel('start', 'Start position', poses.map((p, i) => [i, p.label]), s.startIndex)}
+              <h4>Robot build</h4>
+              <label class="sel"><span>Drivetrain</span><select id="drive">${driveOpts}</select></label>
+              ${sel('motors', 'Drive motors', [4, 6, 8].map((n) => [n, `${n} × 11W`]), cfg.power.motors)}
+              ${sel('rpm', 'Wheel speed', [200, 257, 300, 333, 360, 400, 450, 480, 600].map((n) => [n, `${n} rpm`]), cfg.power.wheelRpm)}
+              ${sel('wheel', 'Wheels', [2.75, 3.25, 4].map((n) => [n, `${n}″`]), +(cfg.power.wheelDia / 0.0254).toFixed(2))}
+              ${slider('weight', 'Robot weight', 8, 22, 0.5, +(cfg.power.mass / 0.4536).toFixed(1), ' lb')}
+              ${sel('brake', 'Stop mode', [['brake', 'Brake'], ['coast', 'Coast']], cfg.power.brake)}
+              ${slider('capacity', 'Pieces held (SG6: 1 Pin + 1 Cup)', 1, 2, 1, Math.min(2, cfg.capacity))}
+              <div class="drive-sum"><span><b>${(summary.topSpeed * 3.281).toFixed(1)}</b> ft/s</span><span><b>${(summary.accel / 9.81).toFixed(2)}</b> g launch</span><span><b>${((summary.turnRate * 180) / Math.PI).toFixed(0)}</b>°/s turn</span></div>
+              <button class="link" id="reset-robot">Reset robot to stock</button>
+            </section>
+            <section>
+              <h4>Driver feel</h4>
+              ${slider('deadzone', 'Stick deadzone', 0, 0.3, 0.01, s.tuning.deadzone)}
+              ${slider('expo', 'Drive curve', 0, 1, 0.05, s.tuning.expo)}
+              ${slider('turnExpo', 'Turn curve', 0, 1, 0.05, s.tuning.turnExpo)}
+              ${slider('slowScale', 'Precision speed', 0.1, 1, 0.05, s.tuning.slowScale)}
+              <div class="checks">
+                ${check('fieldOriented', 'Field-oriented (X-drive)')}
+                ${check('showGhost', 'Race my best-run ghost')}
+                ${check('countdown', '3-2-1 countdown')}
+                ${check('sound', 'Sound')}
+              </div>
+              ${sel('quality', 'Graphics', [['high', 'High (shadows)'], ['low', 'Fast']], s.quality)}
+            </section>
+          </div>
+        </details>
+
         <footer class="startbar">
-          <div class="pbline">Personal best for this mode: <b>${fmtResult(best)}</b></div>
+          <div class="pbline">${preset.name} · ${station.label} · ${CAMERA_LABELS[s.camera]}</div>
           <button class="primary" id="go">START ▶</button>
         </footer>
       </div>`);
     this.bindNav(o);
+    const rerender = () => {
+      this.save();
+      const adv = (o.querySelector('details.advanced') as HTMLDetailsElement | null)?.open;
+      this.setup();
+      if (adv) (overlay().querySelector('details.advanced') as HTMLDetailsElement).open = true;
+    };
+    o.querySelectorAll<HTMLElement>('[data-mode]').forEach((b) => b.addEventListener('click', () => ((s.mode[g.id] = b.dataset.mode as ModeId), rerender())));
+    o.querySelectorAll<HTMLElement>('[data-preset]').forEach((b) => b.addEventListener('click', () => ((s.preset[g.id] = b.dataset.preset!), rerender())));
+    o.querySelectorAll<HTMLElement>('[data-station]').forEach((b) => b.addEventListener('click', () => ((s.station[g.id] = b.dataset.station!), rerender())));
+    o.querySelectorAll<HTMLElement>('[data-camera]').forEach((b) => b.addEventListener('click', () => ((s.camera = b.dataset.camera as Settings['camera']), rerender())));
 
-    o.querySelectorAll<HTMLInputElement>('input[name=mode]').forEach((r) =>
-      r.addEventListener('change', () => {
-        s.mode[g.id] = r.value as ModeId;
-        this.save();
-        this.setup();
-      }),
-    );
-    o.querySelectorAll<HTMLInputElement>('input[name=preset]').forEach((r) =>
-      r.addEventListener('change', () => {
-        s.preset[g.id] = r.value;
-        this.save();
-        this.setup();
-      }),
-    );
     const tweak = (): RobotTweaks => (s.tweaks[preset.id] ??= {});
     const bindRange = (id: string, apply: (v: number) => void) => {
       const el = o.querySelector<HTMLInputElement>(`#${id}`);
@@ -271,12 +267,12 @@ export class Ui {
     bindRange('expo', (v) => (s.tuning.expo = v));
     bindRange('turnExpo', (v) => (s.tuning.turnExpo = v));
     bindRange('slowScale', (v) => (s.tuning.slowScale = v));
-    const bindSel = (id: string, apply: (v: string) => void, rerender = false) => {
+    const bindSel = (id: string, apply: (v: string) => void, re = false) => {
       const el = o.querySelector<HTMLSelectElement>(`#${id}`);
       el?.addEventListener('change', () => {
         apply(el.value);
-        this.save();
-        if (rerender) this.setup();
+        if (re) rerender();
+        else this.save();
       });
     };
     bindSel('drive', (v) => (tweak().drive = v as DriveType), true);
@@ -284,9 +280,7 @@ export class Ui {
     bindSel('rpm', (v) => (tweak().wheelRpm = parseInt(v, 10)), true);
     bindSel('wheel', (v) => (tweak().wheelIn = parseFloat(v)), true);
     bindSel('brake', (v) => (tweak().brake = v as 'coast' | 'brake'), true);
-    bindSel('station', (v) => (s.station[g.id] = v), true);
     bindSel('start', (v) => (s.startIndex = parseInt(v, 10)));
-    bindSel('camera', (v) => (s.camera = v as Settings['camera']));
     bindSel('quality', (v) => (s.quality = v as Settings['quality']));
     o.querySelectorAll<HTMLInputElement>('[data-bool]').forEach((el) =>
       el.addEventListener('change', () => {
@@ -296,8 +290,7 @@ export class Ui {
     );
     o.querySelector('#reset-robot')?.addEventListener('click', () => {
       delete s.tweaks[preset.id];
-      this.save();
-      this.setup();
+      rerender();
     });
     o.querySelector('#go')?.addEventListener('click', () => this.host.start());
   }

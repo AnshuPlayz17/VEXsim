@@ -93,6 +93,18 @@ const PRESETS: RobotConfig[] = [
     model: vexModel({ team: '2026A', length: 15, width: 15, drive: 'tank6', wheel: 3.25, cartridge: 'blue', lift: 'dr4b', liftMin: 3, liftMax: 42, rollers: true, accent: 0xe8862a }),
   },
   {
+    id: 'vex-cascade',
+    name: 'Cascade + horizontal intake',
+    description: 'Six-motor 450 RPM drive, a 3-stage cascade lift that rises straight up, and a roller intake feeding a claw. Fast to the top of any stack.',
+    source: 'Inspired by this season’s cascade reveals (ACE-style cascade with a horizontal intake, Formula 5).',
+    length: 15 * IN, width: 15 * IN, height: 14 * IN,
+    drive: 'tank',
+    power: { motors: 6, cartridge: 'blue', wheelRpm: 450, wheelDia: 3.25 * IN, mass: 15 * LB, mu: 0.9, trackWidth: 12.5 * IN, wheelbase: 11 * IN, scrub: 0.22, brake: 'brake' },
+    capacity: 2, intakeWidth: 0.24, intakeReach: 0.13, liftTime: 0.75,
+    stats: { Lift: '3-stage cascade to ~44"', Holds: '1 Pin + 1 Cup (SG6 max)' },
+    model: vexModel({ team: '2026D', length: 15, width: 15, drive: 'tank6', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 44, rollers: true, accent: 0xd8342b }),
+  },
+  {
     id: 'vex-flex',
     name: 'Clawbot "Flex"',
     description: 'Four-motor drive, single arm and claw, like VEX’s Override Hero Bot. Slower, simple and reliable. A great first robot.',

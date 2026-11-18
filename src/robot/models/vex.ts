@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { IN } from '../../core/units';
 import {
-  type ModelCtx, bar, cChannel, makeCtx, mat, mesh, numberTexture, omniWheel, roller, standoff,
+  type ModelCtx, bar, cable, cChannel, gear, makeCtx, mat, mesh, numberTexture, nut, omniWheel, roller, rubberBand, standoff,
   tractionWheel, v5Battery, v5Brain, v5Motor,
 } from './parts';
 import type { ModelBuilder, RobotAnim, RobotModel } from './types';
@@ -18,7 +18,7 @@ export interface VexSpec {
   drive: 'tank6' | 'tank4' | 'xdrive';
   wheel: 3.25 | 4 | 2.75;
   cartridge: 'blue' | 'green' | 'red';
-  lift: 'dr4b' | 'arm' | 'chainbar';
+  lift: 'dr4b' | 'arm' | 'chainbar' | 'cascade';
   /** End-effector height range, inches. */
   liftMin: number;
   liftMax: number;
@@ -43,6 +43,8 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   const axleY = wheelD / 2;
   const railY = axleY + 0.2 * IN;
   const wheels: THREE.Group[] = [];
+  /** Motor positions, wired to the brain at the end. */
+  const motorAt: THREE.Vector3[] = [];
 
   // ---------------------------------------------------------- drivetrain
   if (s.drive === 'xdrive') {
@@ -60,6 +62,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       const w = omniWheel(ctx, pod, wheelD, 1.1 * IN, 0, axleY, 0);
       wheels.push(w);
       v5Motor(ctx, pod, 0, axleY + 0.3 * IN, -1.7 * IN * sz, s.cartridge, sz);
+      motorAt.push(new THREE.Vector3(sx * c * 0.8, axleY + 1.2 * IN, sz * c * 0.8));
       bar(ctx, pod, [2.6 * IN, 0.06 * IN, 3.2 * IN], [0, axleY + 1.4 * IN, -0.8 * IN * sz], metal, { metal: 0.7 });
     }
   } else {
@@ -77,6 +80,8 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
           : omniWheel(ctx, root, wheelD, 1 * IN, fx, axleY, zr - side * 1.1 * IN);
         wheels.push(w);
         v5Motor(ctx, root, fx, axleY + 0.35 * IN, zr - side * 3.6 * IN, s.cartridge, side);
+        motorAt.push(new THREE.Vector3(fx, axleY + 1.5 * IN, zr - side * 3.6 * IN));
+        nut(ctx, root, fx, axleY, side * (W / 2 + 0.1 * IN));
       }
     }
     // Cross members front and back.
@@ -84,7 +89,14 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
     cChannel(ctx, root, W - 1 * IN, -L / 2 + 0.6 * IN, railY, 0, { color: metal, along: 'z' });
   }
   // Electronics.
-  v5Brain(ctx, root, -L / 2 + 3 * IN, railY + 2.2 * IN, 0);
+  const brainPos = new THREE.Vector3(-L / 2 + 3 * IN, railY + 2.2 * IN, 0);
+  v5Brain(ctx, root, brainPos.x, brainPos.y, brainPos.z);
+  // Standoffs holding the brain plate, and nuts at the frame corners.
+  for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
+    standoff(ctx, root, new THREE.Vector3(brainPos.x + sx * 1.8 * IN, railY, sz * 1.4 * IN), new THREE.Vector3(brainPos.x + sx * 1.8 * IN, brainPos.y - 0.55 * IN, sz * 1.4 * IN));
+    nut(ctx, root, sx * (L / 2 - 0.3 * IN), railY + 0.3 * IN, sz * (W / 2 + 0.1 * IN));
+  }
+  v5Battery(ctx, root, -1.5 * IN, railY + 1.2 * IN, W / 2 - 4.2 * IN);
   v5Battery(ctx, root, -1.5 * IN, railY + 1.2 * IN, W / 2 - 4.2 * IN);
   // Air tank for pistons (common on stacking bots).
   const tank = mesh(ctx, new THREE.CylinderGeometry(0.75 * IN, 0.75 * IN, 5 * IN, 14), mat(ctx, 0xd7dde4, { metal: 0.6, rough: 0.3, opacity: 0.85 }), root, -1.5 * IN, railY + 1 * IN, -W / 2 + 3.6 * IN);
@@ -102,22 +114,45 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   const liftMin = s.liftMin * IN;
   const liftMax = s.liftMax * IN;
   const accent = mat(ctx, s.accent, { rough: 0.45, opacity: 0.85 });
-  const towerX = s.lift === 'arm' ? -L / 2 + 2.5 * IN : s.lift === 'dr4b' ? -L / 2 + 4 * IN : -1 * IN;
+  const towerX = s.lift === 'arm' ? -L / 2 + 2.5 * IN : s.lift === 'dr4b' ? -L / 2 + 4 * IN : s.lift === 'cascade' ? -L / 2 + 5 * IN : -1 * IN;
   // DR4B stages are about the robot's length; the towers are as tall as needed to reach liftMax.
   const dr4bStage = Math.min(L * 0.85, (liftMax - liftMin) / 2 / 0.9);
   const pivotY = s.lift === 'dr4b' ? Math.max(railY + 3 * IN, liftMax - 2 * 0.9 * dr4bStage) : railY + (s.lift === 'arm' ? 10 : 8) * IN;
   // Towers (vertical C-channels) on both sides.
   const towerZ = W / 2 - 2.6 * IN;
-  for (const side of [-1, 1]) {
-    cChannel(ctx, root, pivotY - railY + 1 * IN, towerX, (pivotY + railY) / 2, side * towerZ, { color: metal, along: 'y' });
-    v5Motor(ctx, root, towerX, pivotY, side * (towerZ - 1.3 * IN), 'red', -side);
+  // Cascade: a fixed outer stage plus nested stages that slide up on string.
+  const cascadeStages = 3;
+  // Stages are 14" so the robot starts under the 18" limit; the stack tops out under 50".
+  const stageH = 14 * IN;
+  const cascade: THREE.Group[] = [];
+  if (s.lift === 'cascade') {
+    for (let k = 0; k <= cascadeStages; k++) {
+      const st = new THREE.Group();
+      root.add(st);
+      for (const side of [-1, 1]) {
+        cChannel(ctx, st, stageH, towerX + k * 0.55 * IN, stageH / 2, side * (towerZ - k * 0.6 * IN), { color: metal, along: 'y' });
+      }
+      // Cross brace at the top of each stage.
+      bar(ctx, st, [0.5 * IN, 0.5 * IN, 2 * (towerZ - k * 0.6 * IN)], [towerX + k * 0.55 * IN, stageH - 0.3 * IN, 0], metal);
+      cascade.push(st);
+    }
+    for (const side of [-1, 1]) v5Motor(ctx, root, towerX - 1.5 * IN, railY + 2 * IN, side * (towerZ - 1.6 * IN), 'red', -side);
+    motorAt.push(new THREE.Vector3(towerX - 1.5 * IN, railY + 3 * IN, 0));
+  } else {
+    for (const side of [-1, 1]) {
+      cChannel(ctx, root, pivotY - railY + 1 * IN, towerX, (pivotY + railY) / 2, side * towerZ, { color: metal, along: 'y' });
+      v5Motor(ctx, root, towerX, pivotY, side * (towerZ - 1.3 * IN), 'red', -side);
+      // Driven gear on the lift pivot.
+      gear(ctx, root, 1.8 * IN, 36, towerX, pivotY, side * (towerZ + 0.5 * IN));
+    }
+    motorAt.push(new THREE.Vector3(towerX, pivotY - 1 * IN, 0));
   }
 
   const effector = new THREE.Group(); // carries the claw; kept level
   root.add(effector);
   const arms: { g: THREE.Group; kind: 'stage1' | 'stage2' | 'arm' }[] = [];
   const stageLen = s.lift === 'dr4b' ? dr4bStage : 0;
-  const armLen = s.lift === 'dr4b' ? 0 : Math.max(L / 2 - towerX + 2 * IN, (liftMax - liftMin) / 1.7);
+  const armLen = s.lift === 'dr4b' || s.lift === 'cascade' ? 0 : Math.max(L / 2 - towerX + 2 * IN, (liftMax - liftMin) / 1.7);
 
   const makeArmBars = (len: number, kind: 'stage1' | 'stage2' | 'arm') => {
     const g = new THREE.Group();
@@ -138,10 +173,12 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   // DR4B carriage: horizontal rails from the top of the lift out over the front.
   const carriage = new THREE.Group();
   root.add(carriage);
-  if (s.lift === 'dr4b') {
+  if (s.lift === 'dr4b' || s.lift === 'cascade') {
     for (const side of [-1, 1]) cChannel(ctx, carriage, L / 2 - towerX, (L / 2 - towerX) / 2, 0, side * (towerZ - 0.8 * IN), { color: metal });
-    makeArmBars(stageLen, 'stage1');
-    makeArmBars(stageLen, 'stage2');
+    if (s.lift === 'dr4b') {
+      makeArmBars(stageLen, 'stage1');
+      makeArmBars(stageLen, 'stage2');
+    }
   } else {
     makeArmBars(armLen, 'arm');
   }
@@ -169,6 +206,18 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
     rollerMeshes.push(roller(ctx, root, 2 * IN, W - 6 * IN, L / 2 + 1.2 * IN, 4 * IN, 0, 0x2fae4f));
   }
 
+  // Rubber bands from the tower to the first stage / arm (lift assist).
+  const bands: THREE.Mesh[] = [];
+  if (s.lift !== 'cascade') for (let i = 0; i < 2; i++) bands.push(rubberBand(ctx, root, new THREE.Vector3(), new THREE.Vector3(0, 0.01, 0)));
+  const bandTo = (m: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3) => {
+    const len = Math.max(0.001, a.distanceTo(b));
+    m.position.copy(a).add(b).multiplyScalar(0.5);
+    m.scale.set(1, len / 0.01, 1);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+  };
+  // Smart cables from every motor to the brain.
+  for (const m of motorAt) cable(ctx, root, m, new THREE.Vector3(brainPos.x + 1.5 * IN, brainPos.y - 0.2 * IN, brainPos.z + (m.z > 0 ? 1 : -1) * 1.2 * IN));
+
   const animate = (a: RobotAnim) => {
     const h = THREE.MathUtils.clamp(a.lift, liftMin, liftMax);
     let ex: number;
@@ -187,6 +236,18 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       ey = pivotY + 2 * Math.sin(t) * stageLen;
       carriage.position.set(towerX, ey, 0);
       effector.position.set(L / 2 - 1 * IN, ey, 0);
+      bands.forEach((b, i) => {
+        const z = (i === 0 ? -1 : 1) * towerZ;
+        bandTo(b, new THREE.Vector3(towerX, pivotY + 4 * IN, z), new THREE.Vector3(towerX + Math.cos(t) * stageLen * 0.4, pivotY + Math.sin(t) * stageLen * 0.4, z));
+      });
+    } else if (s.lift === 'cascade') {
+      // Each stage rises an equal share of the travel.
+      // The carriage rides the last stage; stages extend once it reaches the top.
+      const extend = Math.max(0, h + 2 * IN - railY - stageH);
+      cascade.forEach((st, k) => (st.position.y = railY + (extend * k) / cascadeStages));
+      ey = h;
+      carriage.position.set(towerX, ey, 0);
+      effector.position.set(L / 2 - 1 * IN, ey, 0);
     } else {
       const sinP = THREE.MathUtils.clamp((h - pivotY) / armLen, -0.98, 0.98);
       const p = Math.asin(sinP);
@@ -196,6 +257,10 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       ex = towerX + Math.cos(p) * armLen;
       ey = pivotY + Math.sin(p) * armLen;
       effector.position.set(ex, ey, 0);
+      bands.forEach((b, i) => {
+        const z = (i === 0 ? -1 : 1) * towerZ;
+        bandTo(b, new THREE.Vector3(towerX - 1 * IN, pivotY + 3 * IN, z), new THREE.Vector3(towerX + Math.cos(p) * armLen * 0.35, pivotY + Math.sin(p) * armLen * 0.35, z));
+      });
     }
     wristG.rotation.x = a.wrist;
     const open = 1 - THREE.MathUtils.clamp(a.claw, 0, 1);

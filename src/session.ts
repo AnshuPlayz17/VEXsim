@@ -65,6 +65,7 @@ export class Session {
   private scoreboard: Scoreboard | null = null;
   private motorSound = new MotorSound();
   private padWarned = false;
+  private detachCam: (() => void) | null = null;
   private lastLift = 0;
 
   constructor(
@@ -106,6 +107,23 @@ export class Session {
     };
     this.runtime = this.game.create(ctx);
     this.rig = new CameraRig(this.settings.camera, this.station, { x: this.game.fieldX, z: this.game.fieldZ });
+    this.detachCam = this.rig.attach(document.getElementById('viewport')!);
+    this.hud.onCamera = (m) => {
+      this.rig.setMode(m);
+      this.hud.setCamera(m);
+    };
+    this.hud.setCamera(this.rig.mode);
+    this.hud.setDevice('keyboard');
+    // Show the full controls card while the countdown runs, the first time.
+    if (!sessionStorage.getItem('vexsim.seenHelp')) {
+      sessionStorage.setItem('vexsim.seenHelp', '1');
+      this.helpVisible = true;
+      this.hud.showHelp(true);
+      setTimeout(() => {
+        this.helpVisible = false;
+        this.hud.showHelp(false);
+      }, 7000);
+    }
 
     if (this.mode === 'gates') this.buildGates();
     if (this.settings.showGhost && this.mode !== 'free') this.spawnGhost();
@@ -118,7 +136,6 @@ export class Session {
     this.prevPos = [this.robot.x, this.robot.z];
     this.hud.setTitle(`${this.game.program} ${this.game.name}`, this.game.modes.find((m) => m.id === this.mode)?.label ?? '');
     this.hud.setAlliance(this.station.alliance);
-    this.toast(`${CAMERA_LABELS[this.rig.mode]} camera · press C / Y to switch`, 'info');
   }
 
   private buildEnvironment(): void {
@@ -240,6 +257,7 @@ export class Session {
     const ctl = this.input.poll(this.cfg.drive);
     this.ctl = ctl;
     for (const a of ctl.actions) this.handleAction(a);
+    this.hud.setDevice(ctl.usingGamepad ? (ctl.vexController ? 'v5' : 'gamepad') : 'keyboard');
     if (ctl.needsMapping && !this.padWarned) {
       this.padWarned = true;
       this.toast('V5 Controller detected: map it once in Home → Controller setup', 'info');
@@ -334,6 +352,7 @@ export class Session {
         return;
       case 'camera':
         this.toast(`${CAMERA_LABELS[this.rig.next()]} camera`, 'info');
+        this.hud.setCamera(this.rig.mode);
         return;
       case 'fieldToggle':
         if (!isHolonomic(this.cfg.drive)) {
@@ -464,6 +483,7 @@ export class Session {
 
   dispose(): void {
     this.motorSound.stop();
+    this.detachCam?.();
     this.runtime?.dispose();
     this.scene.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.InstancedMesh || o instanceof THREE.Line) {
