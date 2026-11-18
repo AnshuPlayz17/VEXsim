@@ -102,6 +102,15 @@ Placing takes real time: the lift travels to the top of the stack, and the wrist
 ### Sources
 - Override game manual summaries ([manual page](https://www.vexrobotics.com/v5/competition/vrc-current-game), [Q&A](https://events.vex.com/faqs/51/pdf)), the [VEXcode VR Override playground](https://api.vex.com/vr/home/playgrounds/v5rc_override.html) and [Hero Bot Flex](https://api.vex.com/vr/home/robots/flex/index.html), and the open [MMGA Override sim](https://github.com/wittodetto/MMGA_Override_AutonSim), used for field coordinates and element dimensions.
 
+## Field reference
+
+[`reference/`](reference/) holds what the field model is built from:
+- [`field-spec.md`](reference/field-spec.md) / [`field-spec.json`](reference/field-spec.json): every dimension, position and count, with where each comes from and which values are assumptions.
+- [`diagrams/`](reference/diagrams/): original top-down and element drawings (starting layout, Pin / Cup / Goals, Toggle).
+- [`SOURCES.md`](reference/SOURCES.md): links to the official manual, VEX's playground, CAD and community photo threads, labelled by what they show.
+
+These files are generated from the simulator's own field data with `npm run reference`, and `npm test` fails if they get out of date. Private copies of official CAD or photos go in `reference/local/` (git-ignored).
+
 ## Project layout
 
 ```

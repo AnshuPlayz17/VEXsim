@@ -469,65 +469,9 @@ class OverrideRuntime implements GameRuntime {
    * 1-foot grid with the field's 180° red/blue symmetry. ASSUMPTION for the extras.
    */
   private spawnLayout(): void {
-    const mirror = (c: PinColor): PinColor => (c === 'red' ? 'blue' : c === 'blue' ? 'red' : c);
-    const pins: { x: number; z: number; c: [PinColor, PinColor] }[] = [];
-    const cups: { x: number; z: number }[] = [];
-    const addPinPair = (x: number, z: number, c: [PinColor, PinColor]) => {
-      pins.push({ x, z, c });
-      pins.push({ x: -x, z: -z, c: [mirror(c[0]), mirror(c[1])] });
-    };
-    const addCupPair = (x: number, z: number) => {
-      cups.push({ x, z }, { x: -x, z: -z });
-    };
-    // Official VR layout (converted: VR +Y = North = our -Z).
-    addPinPair(-0.6, -1.745, ['red', 'yellow']);
-    addPinPair(-1.745, -0.6, ['red', 'yellow']);
-    addPinPair(0.6, -1.745, ['blue', 'yellow']);
-    addPinPair(1.745, -0.6, ['blue', 'yellow']);
-    addPinPair(0, -0.6, ['yellow', 'yellow']);
-    addPinPair(-0.6, 0, ['red', 'blue']);
-    addCupPair(-1.2, -1.2);
-    addCupPair(1.2, -1.2);
-    addCupPair(-0.6, -0.6);
-    addCupPair(0.6, -0.6);
-
-    // Fill the rest on the 0.3 m grid, away from goals, toggles, loaders and robot start tiles.
-    const occupied = (x: number, z: number) =>
-      GOALS.some((g) => Math.hypot(g.x - x, g.z - z) < 0.22) ||
-      LOADERS.some((l) => Math.hypot(l.x - x, l.z - z) < 0.3) ||
-      TOGGLES.some((t) => Math.hypot(t.x - x, t.z - z) < 0.42) ||
-      pins.some((p) => Math.hypot(p.x - x, p.z - z) < 0.2) ||
-      cups.some((c) => Math.hypot(c.x - x, c.z - z) < 0.2) ||
-      startPoses('red').concat(startPoses('blue')).some((s) => Math.abs(s.x - x) < 0.36 && Math.abs(s.z - z) < 0.36);
-    const candidates: [number, number][] = [];
-    for (let i = -5; i <= 5; i++) for (let j = -5; j <= 5; j++) {
-      const x = i * 0.3;
-      const z = j * 0.3;
-      if (x < 0 || (x === 0 && z < 0)) candidates.push([x, z]); // one of each mirrored pair
-    }
-    // Deterministic shuffle so the layout is the same every match.
-    let seed = 20262027;
-    const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-    for (let i = candidates.length - 1; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-    }
-    const extraPins: [PinColor, PinColor][] = [
-      ['red', 'yellow'], ['red', 'yellow'], ['blue', 'yellow'], ['blue', 'yellow'],
-      ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'],
-      ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['red', 'blue'],
-    ];
-    let cupPairs = 14;
-    for (const [x, z] of candidates) {
-      if (occupied(x, z) || occupied(-x, -z)) continue;
-      if (extraPins.length) addPinPair(x, z, extraPins.shift()!);
-      else if (cupPairs > 0) {
-        addCupPair(x, z);
-        cupPairs--;
-      } else break;
-    }
-    for (const p of pins) this.makePin(p.x, PIN_LEN / 2 + 0.002, p.z, p.c);
-    for (const c of cups) this.makeCup(c.x, CUP_H / 2 + 0.002, c.z);
+    const layout = startingLayout();
+    for (const p of layout.pins) this.makePin(p.x, PIN_LEN / 2 + 0.002, p.z, p.colors);
+    for (const c of layout.cups) this.makeCup(c.x, CUP_H / 2 + 0.002, c.z);
     // The odd yellow/yellow Pin starts Placed on the Tall Goal. ASSUMPTION.
     const center = this.goals.find((g) => g.id === 'center')!;
     const yy = this.makePin(0, 0.5, 0, ['yellow', 'yellow'], false);
@@ -949,6 +893,104 @@ class OverrideRuntime implements GameRuntime {
     this.mats.cupOpaque.dispose();
   }
 }
+
+export interface LayoutPin {
+  x: number;
+  z: number;
+  /** [tapered (cone) half, flat (prism) half] */
+  colors: [PinColor, PinColor];
+  /** 'official': from the official VEXcode VR layout; 'filled': our symmetric fill (ASSUMPTION). */
+  source: 'official' | 'filled';
+}
+export interface LayoutCup {
+  x: number;
+  z: number;
+  source: 'official' | 'filled';
+}
+
+/**
+ * Field elements' starting positions (meters, field-center origin, +X toward the
+ * blue wall, +Z toward the South wall). Pure and deterministic, so the game, the
+ * reference spec and the diagrams all use the same layout.
+ */
+export function startingLayout(): { pins: LayoutPin[]; cups: LayoutCup[] } {
+  const mirror = (c: PinColor): PinColor => (c === 'red' ? 'blue' : c === 'blue' ? 'red' : c);
+  const pins: LayoutPin[] = [];
+  const cups: LayoutCup[] = [];
+  let source: 'official' | 'filled' = 'official';
+  const addPinPair = (x: number, z: number, c: [PinColor, PinColor]) => {
+    pins.push({ x, z, colors: c, source });
+    pins.push({ x: -x, z: -z, colors: [mirror(c[0]), mirror(c[1])], source });
+  };
+  const addCupPair = (x: number, z: number) => {
+    cups.push({ x, z, source }, { x: -x, z: -z, source });
+  };
+  // Official VR layout (converted: VR +Y = North = our -Z).
+  addPinPair(-0.6, -1.745, ['red', 'yellow']);
+  addPinPair(-1.745, -0.6, ['red', 'yellow']);
+  addPinPair(0.6, -1.745, ['blue', 'yellow']);
+  addPinPair(1.745, -0.6, ['blue', 'yellow']);
+  addPinPair(0, -0.6, ['yellow', 'yellow']);
+  addPinPair(-0.6, 0, ['red', 'blue']);
+  addCupPair(-1.2, -1.2);
+  addCupPair(1.2, -1.2);
+  addCupPair(-0.6, -0.6);
+  addCupPair(0.6, -0.6);
+  source = 'filled';
+
+  // Fill the rest on the 0.3 m grid, away from goals, toggles, loaders and robot start tiles.
+  const occupied = (x: number, z: number) =>
+    GOALS.some((g) => Math.hypot(g.x - x, g.z - z) < 0.22) ||
+    LOADERS.some((l) => Math.hypot(l.x - x, l.z - z) < 0.3) ||
+    TOGGLES.some((t) => Math.hypot(t.x - x, t.z - z) < 0.42) ||
+    pins.some((p) => Math.hypot(p.x - x, p.z - z) < 0.2) ||
+    cups.some((c) => Math.hypot(c.x - x, c.z - z) < 0.2) ||
+    startPoses('red').concat(startPoses('blue')).some((s) => Math.abs(s.x - x) < 0.36 && Math.abs(s.z - z) < 0.36);
+  const candidates: [number, number][] = [];
+  for (let i = -5; i <= 5; i++) for (let j = -5; j <= 5; j++) {
+    const x = i * 0.3;
+    const z = j * 0.3;
+    if (x < 0 || (x === 0 && z < 0)) candidates.push([x, z]); // one of each mirrored pair
+  }
+  // Deterministic shuffle so the layout is the same every match.
+  let seed = 20262027;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  const extraPins: [PinColor, PinColor][] = [
+    ['red', 'yellow'], ['red', 'yellow'], ['blue', 'yellow'], ['blue', 'yellow'],
+    ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'],
+    ['yellow', 'yellow'], ['yellow', 'yellow'], ['yellow', 'yellow'], ['red', 'blue'],
+  ];
+  let cupPairs = 14;
+  for (const [x, z] of candidates) {
+    if (occupied(x, z) || occupied(-x, -z)) continue;
+    if (extraPins.length) addPinPair(x, z, extraPins.shift()!);
+    else if (cupPairs > 0) {
+      addCupPair(x, z);
+      cupPairs--;
+    } else break;
+  }
+  return { pins, cups };
+}
+
+/** Fixed field geometry, exported for the reference spec and diagrams. */
+export const OVERRIDE_FIELD = {
+  half: HALF,
+  wallHeight: WALL_H,
+  goals: GOALS,
+  goalHeight: GOAL_H,
+  goalRadiusBottom: GOAL_R_BOTTOM,
+  goalRadiusTop: GOAL_R_TOP,
+  toggles: TOGGLES,
+  toggleLength: TOGGLE_LEN,
+  loaders: LOADERS,
+  pin: { length: PIN_LEN, radius: PIN_R, coneLength: PIN_CONE, tipRadius: PIN_TIP_R },
+  cupHeight: CUP_H,
+  startPoses,
+};
 
 function startPoses(alliance: Alliance): StartPose[] {
   const s = alliance === 'red' ? -1 : 1;

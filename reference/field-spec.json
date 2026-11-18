@@ -1,0 +1,1008 @@
+{
+  "game": "VEX V5 Robotics Competition 2026–27: Override",
+  "note": "Facts the simulator uses. Each entry says where it comes from; \"assumption\" marks values the sim had to choose. Check the official game manual for rulings.",
+  "coordinates": {
+    "origin": "center of the field",
+    "x": "toward the blue Alliance Station wall (East); red stands on the West wall",
+    "z": "toward the South wall (top-down diagrams put North at the top)",
+    "units": "inches (x_in, z_in) and meters (x_m, z_m)"
+  },
+  "field": {
+    "size_in": 144,
+    "tiles": "36 foam tiles, 6 × 6, each 24 in square",
+    "tape": [
+      "two corner-to-corner diagonals splitting the field into four Quadrants (N, E, S, W)",
+      "Midfield: a 48 in diamond (|x| + |z| ≤ 24 in) with a center cross"
+    ],
+    "perimeterHeight_in": {
+      "value": 11.8,
+      "source": "assumption (sim value)"
+    },
+    "source": "game manual summary; VEXcode VR Override playground layout"
+  },
+  "counts": {
+    "pins": {
+      "total": 63,
+      "redYellow": 20,
+      "blueYellow": 20,
+      "yellowYellow": 19,
+      "redBlue": 4
+    },
+    "cups": 56,
+    "goals": {
+      "total": 9,
+      "tall": 1,
+      "shortNeutral": 4,
+      "allianceRed": 2,
+      "allianceBlue": 2
+    },
+    "toggles": 4,
+    "loaders": 4,
+    "source": "game manual"
+  },
+  "goals": [
+    {
+      "id": "center",
+      "kind": "tall",
+      "alliance": null,
+      "quadrant": null,
+      "x_in": 0,
+      "z_in": 0,
+      "x_m": 0,
+      "z_m": 0,
+      "height_in": 8.8,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "N-short",
+      "kind": "short",
+      "alliance": null,
+      "quadrant": "N",
+      "x_in": -23.6,
+      "z_in": -47.2,
+      "x_m": -0.6,
+      "z_m": -1.2,
+      "height_in": 5.8,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "N-blue",
+      "kind": "alliance",
+      "alliance": "blue",
+      "quadrant": "N",
+      "x_in": 23.6,
+      "z_in": -47.2,
+      "x_m": 0.6,
+      "z_m": -1.2,
+      "height_in": 3.2,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "E-blue",
+      "kind": "alliance",
+      "alliance": "blue",
+      "quadrant": "E",
+      "x_in": 47.2,
+      "z_in": -23.6,
+      "x_m": 1.2,
+      "z_m": -0.6,
+      "height_in": 3.2,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "E-short",
+      "kind": "short",
+      "alliance": null,
+      "quadrant": "E",
+      "x_in": 47.2,
+      "z_in": 23.6,
+      "x_m": 1.2,
+      "z_m": 0.6,
+      "height_in": 5.8,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "S-short",
+      "kind": "short",
+      "alliance": null,
+      "quadrant": "S",
+      "x_in": 23.6,
+      "z_in": 47.2,
+      "x_m": 0.6,
+      "z_m": 1.2,
+      "height_in": 5.8,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "S-red",
+      "kind": "alliance",
+      "alliance": "red",
+      "quadrant": "S",
+      "x_in": -23.6,
+      "z_in": 47.2,
+      "x_m": -0.6,
+      "z_m": 1.2,
+      "height_in": 3.2,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "W-red",
+      "kind": "alliance",
+      "alliance": "red",
+      "quadrant": "W",
+      "x_in": -47.2,
+      "z_in": 23.6,
+      "x_m": -1.2,
+      "z_m": 0.6,
+      "height_in": 3.2,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    },
+    {
+      "id": "W-short",
+      "kind": "short",
+      "alliance": null,
+      "quadrant": "W",
+      "x_in": -47.2,
+      "z_in": -23.6,
+      "x_m": -1.2,
+      "z_m": -0.6,
+      "height_in": 5.8,
+      "shape": "octagonal, tapered",
+      "baseAcross_in": 6.1,
+      "topAcross_in": 3.8,
+      "source": "official field layout (VEXcode VR) and element dimensions"
+    }
+  ],
+  "toggles": [
+    {
+      "quadrant": "N",
+      "x_in": 0,
+      "z_in": -70.1,
+      "x_m": 0,
+      "z_m": -1.78,
+      "length_in": 25.8,
+      "faces": [
+        "yellow (neutral)",
+        "red",
+        "blue"
+      ],
+      "rule": "counts for an alliance only when set to its color and no Robot is touching it",
+      "source": "game manual; official field layout"
+    },
+    {
+      "quadrant": "E",
+      "x_in": 70.1,
+      "z_in": 0,
+      "x_m": 1.78,
+      "z_m": 0,
+      "length_in": 25.8,
+      "faces": [
+        "yellow (neutral)",
+        "red",
+        "blue"
+      ],
+      "rule": "counts for an alliance only when set to its color and no Robot is touching it",
+      "source": "game manual; official field layout"
+    },
+    {
+      "quadrant": "S",
+      "x_in": 0,
+      "z_in": 70.1,
+      "x_m": 0,
+      "z_m": 1.78,
+      "length_in": 25.8,
+      "faces": [
+        "yellow (neutral)",
+        "red",
+        "blue"
+      ],
+      "rule": "counts for an alliance only when set to its color and no Robot is touching it",
+      "source": "game manual; official field layout"
+    },
+    {
+      "quadrant": "W",
+      "x_in": -70.1,
+      "z_in": 0,
+      "x_m": -1.78,
+      "z_m": 0,
+      "length_in": 25.8,
+      "faces": [
+        "yellow (neutral)",
+        "red",
+        "blue"
+      ],
+      "rule": "counts for an alliance only when set to its color and no Robot is touching it",
+      "source": "game manual; official field layout"
+    }
+  ],
+  "loaders": [
+    {
+      "alliance": "red",
+      "x_in": -68.5,
+      "z_in": -58.7,
+      "x_m": -1.74,
+      "z_m": -1.49,
+      "source": "official field layout (one beside each Alliance Station)"
+    },
+    {
+      "alliance": "red",
+      "x_in": -68.5,
+      "z_in": 58.7,
+      "x_m": -1.74,
+      "z_m": 1.49,
+      "source": "official field layout (one beside each Alliance Station)"
+    },
+    {
+      "alliance": "blue",
+      "x_in": 68.5,
+      "z_in": -58.7,
+      "x_m": 1.74,
+      "z_m": -1.49,
+      "source": "official field layout (one beside each Alliance Station)"
+    },
+    {
+      "alliance": "blue",
+      "x_in": 68.5,
+      "z_in": 58.7,
+      "x_m": 1.74,
+      "z_m": 1.49,
+      "source": "official field layout (one beside each Alliance Station)"
+    }
+  ],
+  "elements": {
+    "pin": {
+      "length_in": 6.5,
+      "acrossCorners_in": 3.7,
+      "tipAcross_in": 1.7,
+      "taperedHalfLength_in": 3.6,
+      "shape": "hexagonal; one half tapers to a tip that nests into a Goal or Cup",
+      "source": "element dimensions (manual appendix, via community CAD)"
+    },
+    "cup": {
+      "height_in": 6.5,
+      "shape": "hourglass; lower half clear, upper half opaque",
+      "source": "game manual (SC3); element dimensions via community CAD"
+    }
+  },
+  "matchLoads": {
+    "match": {
+      "perAlliance": "10 Cups + 10 alliance-color Pins + 1 yellow/yellow Pin",
+      "source": "game manual summary; order of release is an assumption"
+    },
+    "skills": {
+      "redYellowPins": 3,
+      "blueYellowPins": 4,
+      "cups": 7,
+      "note": "begin off the field as Match Loads",
+      "source": "game manual (Skills), as quoted"
+    }
+  },
+  "preloads": {
+    "perRobot": "1 alliance-color Pin",
+    "source": "VEXcode VR playground; game manual summary"
+  },
+  "robotStartTiles": [
+    {
+      "alliance": "red",
+      "label": "Left of the Toggle",
+      "x_in": -59.1,
+      "z_in": -39.4,
+      "x_m": -1.5,
+      "z_m": -1,
+      "source": "assumption"
+    },
+    {
+      "alliance": "red",
+      "label": "Right of the Toggle",
+      "x_in": -59.1,
+      "z_in": 39.4,
+      "x_m": -1.5,
+      "z_m": 1,
+      "source": "assumption"
+    },
+    {
+      "alliance": "blue",
+      "label": "Left of the Toggle",
+      "x_in": 59.1,
+      "z_in": 39.4,
+      "x_m": 1.5,
+      "z_m": 1,
+      "source": "assumption"
+    },
+    {
+      "alliance": "blue",
+      "label": "Right of the Toggle",
+      "x_in": 59.1,
+      "z_in": -39.4,
+      "x_m": 1.5,
+      "z_m": -1,
+      "source": "assumption"
+    }
+  ],
+  "startingLayout": {
+    "note": "Elements marked \"official\" are the 20 in the VEXcode VR layout. \"filled\" elements complete the full field count symmetrically and are an assumption until checked against the manual.",
+    "pins": [
+      {
+        "x_in": -23.6,
+        "z_in": -68.7,
+        "x_m": -0.6,
+        "z_m": -1.745,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": 68.7,
+        "x_m": 0.6,
+        "z_m": 1.745,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": -68.7,
+        "z_in": -23.6,
+        "x_m": -1.745,
+        "z_m": -0.6,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 68.7,
+        "z_in": 23.6,
+        "x_m": 1.745,
+        "z_m": 0.6,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": -68.7,
+        "x_m": 0.6,
+        "z_m": -1.745,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": 68.7,
+        "x_m": -0.6,
+        "z_m": 1.745,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 68.7,
+        "z_in": -23.6,
+        "x_m": 1.745,
+        "z_m": -0.6,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": -68.7,
+        "z_in": 23.6,
+        "x_m": -1.745,
+        "z_m": 0.6,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 0,
+        "z_in": -23.6,
+        "x_m": 0,
+        "z_m": -0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 0,
+        "z_in": 23.6,
+        "x_m": 0,
+        "z_m": 0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": 0,
+        "x_m": -0.6,
+        "z_m": 0,
+        "colors": [
+          "red",
+          "blue"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": 0,
+        "x_m": 0.6,
+        "z_m": 0,
+        "colors": [
+          "blue",
+          "red"
+        ],
+        "source": "official"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": -35.4,
+        "x_m": -0.9,
+        "z_m": -0.9,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": 35.4,
+        "x_m": 0.9,
+        "z_m": 0.9,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": -11.8,
+        "x_m": -0.6,
+        "z_m": -0.3,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": 11.8,
+        "x_m": 0.6,
+        "z_m": 0.3,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": -47.2,
+        "x_m": -0.9,
+        "z_m": -1.2,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": 47.2,
+        "x_m": 0.9,
+        "z_m": 1.2,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": 23.6,
+        "x_m": -0.3,
+        "z_m": 0.6,
+        "colors": [
+          "blue",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": -23.6,
+        "x_m": 0.3,
+        "z_m": -0.6,
+        "colors": [
+          "red",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": -23.6,
+        "x_m": -0.9,
+        "z_m": -0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": 23.6,
+        "x_m": 0.9,
+        "z_m": 0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": -47.2,
+        "x_m": -0.3,
+        "z_m": -1.2,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": 47.2,
+        "x_m": 0.3,
+        "z_m": 1.2,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": 35.4,
+        "x_m": -0.6,
+        "z_m": 0.9,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": -35.4,
+        "x_m": 0.6,
+        "z_m": -0.9,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": -59.1,
+        "x_m": -1.2,
+        "z_m": -1.5,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": 59.1,
+        "x_m": 1.2,
+        "z_m": 1.5,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": 59.1,
+        "x_m": -1.2,
+        "z_m": 1.5,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": -59.1,
+        "x_m": 1.2,
+        "z_m": -1.5,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": -23.6,
+        "x_m": -0.3,
+        "z_m": -0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": 23.6,
+        "x_m": 0.3,
+        "z_m": 0.6,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": -11.8,
+        "x_m": -0.3,
+        "z_m": -0.3,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": 11.8,
+        "x_m": 0.3,
+        "z_m": 0.3,
+        "colors": [
+          "yellow",
+          "yellow"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 0,
+        "z_in": -35.4,
+        "x_m": 0,
+        "z_m": -0.9,
+        "colors": [
+          "red",
+          "blue"
+        ],
+        "source": "filled"
+      },
+      {
+        "x_in": 0,
+        "z_in": 35.4,
+        "x_m": 0,
+        "z_m": 0.9,
+        "colors": [
+          "blue",
+          "red"
+        ],
+        "source": "filled"
+      }
+    ],
+    "cups": [
+      {
+        "x_in": -47.2,
+        "z_in": -47.2,
+        "x_m": -1.2,
+        "z_m": -1.2,
+        "source": "official"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": 47.2,
+        "x_m": 1.2,
+        "z_m": 1.2,
+        "source": "official"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": -47.2,
+        "x_m": 1.2,
+        "z_m": -1.2,
+        "source": "official"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": 47.2,
+        "x_m": -1.2,
+        "z_m": 1.2,
+        "source": "official"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": -23.6,
+        "x_m": -0.6,
+        "z_m": -0.6,
+        "source": "official"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": 23.6,
+        "x_m": 0.6,
+        "z_m": 0.6,
+        "source": "official"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": -23.6,
+        "x_m": 0.6,
+        "z_m": -0.6,
+        "source": "official"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": 23.6,
+        "x_m": -0.6,
+        "z_m": 0.6,
+        "source": "official"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": 11.8,
+        "x_m": -1.2,
+        "z_m": 0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": -11.8,
+        "x_m": 1.2,
+        "z_m": -0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": 11.8,
+        "x_m": -0.9,
+        "z_m": 0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": -11.8,
+        "x_m": 0.9,
+        "z_m": -0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": -59.1,
+        "z_in": -23.6,
+        "x_m": -1.5,
+        "z_m": -0.6,
+        "source": "filled"
+      },
+      {
+        "x_in": 59.1,
+        "z_in": 23.6,
+        "x_m": 1.5,
+        "z_m": 0.6,
+        "source": "filled"
+      },
+      {
+        "x_in": -23.6,
+        "z_in": 59.1,
+        "x_m": -0.6,
+        "z_m": 1.5,
+        "source": "filled"
+      },
+      {
+        "x_in": 23.6,
+        "z_in": -59.1,
+        "x_m": 0.6,
+        "z_m": -1.5,
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": 59.1,
+        "x_m": -0.9,
+        "z_m": 1.5,
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": -59.1,
+        "x_m": 0.9,
+        "z_m": -1.5,
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": 47.2,
+        "x_m": -0.3,
+        "z_m": 1.2,
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": -47.2,
+        "x_m": 0.3,
+        "z_m": -1.2,
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": 0,
+        "x_m": -0.9,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": 0,
+        "x_m": 0.9,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": -11.8,
+        "x_m": -1.2,
+        "z_m": -0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": 11.8,
+        "x_m": 1.2,
+        "z_m": 0.3,
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": -35.4,
+        "x_m": -0.3,
+        "z_m": -0.9,
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": 35.4,
+        "x_m": 0.3,
+        "z_m": 0.9,
+        "source": "filled"
+      },
+      {
+        "x_in": -47.2,
+        "z_in": 0,
+        "x_m": -1.2,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": 47.2,
+        "z_in": 0,
+        "x_m": 1.2,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": 35.4,
+        "x_m": -0.9,
+        "z_m": 0.9,
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": -35.4,
+        "x_m": 0.9,
+        "z_m": -0.9,
+        "source": "filled"
+      },
+      {
+        "x_in": -35.4,
+        "z_in": 23.6,
+        "x_m": -0.9,
+        "z_m": 0.6,
+        "source": "filled"
+      },
+      {
+        "x_in": 35.4,
+        "z_in": -23.6,
+        "x_m": 0.9,
+        "z_m": -0.6,
+        "source": "filled"
+      },
+      {
+        "x_in": -11.8,
+        "z_in": 0,
+        "x_m": -0.3,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": 11.8,
+        "z_in": 0,
+        "x_m": 0.3,
+        "z_m": 0,
+        "source": "filled"
+      },
+      {
+        "x_in": 0,
+        "z_in": -47.2,
+        "x_m": 0,
+        "z_m": -1.2,
+        "source": "filled"
+      },
+      {
+        "x_in": 0,
+        "z_in": 47.2,
+        "x_m": 0,
+        "z_m": 1.2,
+        "source": "filled"
+      }
+    ],
+    "tallGoal": {
+      "pin": [
+        "yellow",
+        "yellow"
+      ],
+      "source": "assumption"
+    }
+  }
+}
