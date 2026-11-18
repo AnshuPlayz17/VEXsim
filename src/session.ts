@@ -252,6 +252,8 @@ export class Session {
   }
 
   /** Called once per animation frame. */
+  private hotWarned = false;
+
   frame(realDt: number): void {
     const dt = Math.min(realDt, 0.1);
     const ctl = this.input.poll(this.cfg.drive);
@@ -419,7 +421,10 @@ export class Session {
     }
     if (this.state === 'paused') phaseText = 'PAUSED';
     const live = this.runtime.liveScore();
-    this.hud.frame(timeText, phaseText, urgent, live.mine, live.other, this.robot.speed);
+    this.hud.frame(timeText, phaseText, urgent, live.mine, live.other, this.robot.speed, this.robot.power);
+    const hot = this.robot.power.temp >= 55;
+    if (hot && !this.hotWarned) this.toast('Drive motors at 55°C: the V5 firmware has halved their current. Ease off pushing.', 'bad');
+    this.hotWarned = hot;
     const red = this.station.alliance === 'red' ? live.mine : live.other;
     const blue = this.station.alliance === 'red' ? live.other : live.mine;
     this.scoreboard?.update({ time: timeText, phase: phaseText, red, blue, title: `${this.game.program} ${this.game.name}` });

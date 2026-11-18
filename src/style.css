@@ -81,6 +81,7 @@ kbd {
 .fuelbar div { height: 100%; background: linear-gradient(90deg, #f2d21b, #ffb01b); transition: width 0.1s; }
 .fuelcount { font-weight: 700; font-family: Rajdhani, Inter, sans-serif; font-size: 18px; }
 #speedo { position: absolute; bottom: 18px; right: 18px; font-family: Rajdhani, Inter, sans-serif; font-weight: 700; font-size: 18px; color: var(--muted); background: var(--panel); padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); }
+#speedo.hot { color: #ff8a5c; border-color: #ff8a5c; }
 .hud-hint { position: absolute; bottom: 60px; right: 18px; color: var(--muted); font-size: 11.5px; }
 #toasts { position: absolute; top: 112px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .toast {

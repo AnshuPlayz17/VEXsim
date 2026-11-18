@@ -1,3 +1,7 @@
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import './style.css';
 import * as THREE from 'three';
 import { loadSettings, type Settings } from './config';
@@ -22,6 +26,8 @@ class App implements UiHost {
   private showingResults = false;
   private starting = false;
   private last = performance.now();
+  /** High quality: ambient occlusion (contact shadows under pieces, in Goal corners). */
+  private composer: EffectComposer | null = null;
 
   constructor() {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -52,6 +58,26 @@ class App implements UiHost {
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h);
     this.session?.rig.resize(w, h);
+    this.composer?.setSize(w, h);
+  }
+
+  private buildComposer(s: Session): void {
+    this.composer?.dispose();
+    this.composer = null;
+    if (this.settings.quality !== 'high') return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+    const c = new EffectComposer(this.renderer, target);
+    c.addPass(new RenderPass(s.scene, s.rig.camera));
+    const ao = new GTAOPass(s.scene, s.rig.camera, w, h);
+    ao.updateGtaoMaterial({ radius: 0.08, distanceExponent: 1, thickness: 1, scale: 1, samples: 12 });
+    ao.blendIntensity = 0.85;
+    c.addPass(ao);
+    c.addPass(new OutputPass());
+    c.setSize(w, h);
+    this.composer = c;
   }
 
   private loop(t: number): void {
@@ -60,7 +86,8 @@ class App implements UiHost {
     const s = this.session;
     if (s) {
       s.frame(dt);
-      this.renderer.render(s.scene, s.rig.camera);
+      if (this.composer) this.composer.render(dt);
+      else this.renderer.render(s.scene, s.rig.camera);
     }
     requestAnimationFrame((tt) => this.loop(tt));
   }
@@ -97,6 +124,7 @@ class App implements UiHost {
       session.scene.environment = environmentMap(this.renderer);
       session.scene.environmentIntensity = 0.55;
       this.session = session;
+      this.buildComposer(session);
       (window as unknown as { __vexsim: Session }).__vexsim = session;
       this.hud.show(true);
       this.hud.showHelp(false);

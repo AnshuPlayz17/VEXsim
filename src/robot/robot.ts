@@ -8,6 +8,7 @@ import {
   type DriveInput,
   type DriveType,
   type DriverTuning,
+  type Supply,
   type Powertrain,
   type Voltages,
   driverVoltages,
@@ -15,6 +16,7 @@ import {
   rightOf,
   stepDrive,
 } from './drivetrain';
+import { type PowerState, freshPower, stepPower, supplyScale, thermalLimit } from './power';
 
 export type Alliance = 'red' | 'blue';
 
@@ -62,6 +64,14 @@ export class Robot {
   /** Last motor voltages (for sound and the HUD). */
   voltages: Voltages = [0, 0];
   private readonly rotateTestShape: RAPIER.Cuboid;
+
+  /** Battery and drive-motor temperature. */
+  power: PowerState = freshPower();
+  /** Current drawn by the non-drive motors (set by the game), A. */
+  mechAmps = 0;
+  /** Chassis acceleration in the robot frame (forward, sideways), for body pitch and roll. */
+  private accel: [number, number] = [0, 0];
+  private tilt: [number, number] = [0, 0];
 
   heading = 0;
   cmd: ChassisState = { vx: 0, vz: 0, omega: 0 };
@@ -159,7 +169,21 @@ export class Robot {
     this.voltages = active
       ? driverVoltages(this.cfg.drive, input, this.heading, driverYaw, tuning)
       : this.cfg.drive === 'xdrive' ? [0, 0, 0, 0] : [0, 0];
-    this.cmd = stepDrive(this.cfg.drive, this.cfg.power, this.cfg.length, this.cfg.width, this.cmd, this.voltages, this.heading, dt);
+    const supply: Supply = { voltage: supplyScale(this.power), limit: thermalLimit(this.power.temp) };
+    const prev = this.cmd;
+    this.cmd = stepDrive(this.cfg.drive, this.cfg.power, this.cfg.length, this.cfg.width, this.cmd, this.voltages, this.heading, dt, supply);
+    if (active || this.power.temp > 26) this.power = stepPower(this.power, dt, supply.amps ?? 0, this.cfg.power.motors, active ? this.mechAmps : 0);
+    if (dt > 0) {
+      const [fx, fz] = forwardOf(this.heading);
+      const [rx, rz] = rightOf(this.heading);
+      const ax = (this.cmd.vx - prev.vx) / dt;
+      const az = (this.cmd.vz - prev.vz) / dt;
+      // Centripetal acceleration in a turn shows up as sideways load.
+      const side = ax * rx + az * rz + Math.hypot(this.cmd.vx, this.cmd.vz) * this.cmd.omega * -1;
+      const k = 1 - Math.exp(-dt / 0.06);
+      this.accel[0] += (ax * fx + az * fz - this.accel[0]) * k;
+      this.accel[1] += (side - this.accel[1]) * k;
+    }
     if (this.frozen) this.cmd = { vx: 0, vz: 0, omega: 0 };
 
     // Rotation: refuse to rotate into a wall (the controller only resolves translation).
@@ -261,7 +285,12 @@ export class Robot {
     this.mesh.position.set(t.x, this.groundY, t.z);
     this.mesh.rotation.set(0, this.heading, 0);
     // Local +x is forward, so pitch is a rotation about local z and roll about local x.
-    this.visual.rotation.set(-this.roll, 0, this.pitch, 'YXZ');
+    // Weight transfer: the chassis squats back under acceleration and leans out in turns
+    // (about 0.6° per m/s², from the wheels' and frame's give).
+    const kTilt = (0.6 * Math.PI) / 180;
+    this.tilt[0] += (clampTilt(this.accel[0] * kTilt) - this.tilt[0]) * 0.3;
+    this.tilt[1] += (clampTilt(-this.accel[1] * kTilt) - this.tilt[1]) * 0.3;
+    this.visual.rotation.set(-this.roll + this.tilt[1], 0, this.pitch + this.tilt[0], 'YXZ');
     this.model.animate(this.anim, 1 / 60);
   }
 
@@ -277,3 +306,5 @@ export class Robot {
     });
   }
 }
+
+const clampTilt = (a: number) => Math.max(-0.05, Math.min(0.05, a));

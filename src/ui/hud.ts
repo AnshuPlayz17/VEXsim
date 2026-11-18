@@ -93,13 +93,15 @@ export class Hud {
     this.root.dataset.alliance = a;
   }
 
-  frame(time: string, phase: string, urgent: boolean, mine: number, other: number, speed: number): void {
+  frame(time: string, phase: string, urgent: boolean, mine: number, other: number, speed: number, power?: { volts: number; charge: number; temp: number }): void {
     this.time.textContent = time;
     this.phase.textContent = phase;
     this.time.classList.toggle('urgent', urgent);
     this.mine.textContent = String(mine);
     this.other.textContent = String(other);
-    this.speedo.textContent = `${speed.toFixed(2)} m/s · ${(speed * 3.281).toFixed(1)} ft/s`;
+    const pw = power ? ` · 🔋 ${power.volts.toFixed(1)} V ${Math.round(power.charge * 100)}% · motors ${Math.round(power.temp)}°C${power.temp >= 55 ? ' ⚠ HOT' : ''}` : '';
+    this.speedo.textContent = `${speed.toFixed(2)} m/s · ${(speed * 3.281).toFixed(1)} ft/s${pw}`;
+    this.speedo.classList.toggle('hot', !!power && power.temp >= 55);
   }
 
   panels(status: string, cargo: string, lines: ScoreLine[], meta: HudMeta): void {

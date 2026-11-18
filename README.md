@@ -6,7 +6,7 @@ A browser-based 3D driving simulator for the **VEX V5 Robotics Competition 2026�
 
 - **The official Override field.** Octagonal Goals, three-face Toggles and corner Loaders sit at their official positions. Hex Pins and hourglass Cups have their real shapes, and the full element counts are on the field.
 - **Manual-accurate scoring and timing.** Each visible Pin half scores, Cups hide halves inside their opaque half, and a Toggle only counts if no robot is touching it. The Midfield, the Autonomous Bonus, and the 0:15 + 1:45 match with its endgame all work as in the manual.
-- **V5 motor physics.** Every drive motor is modeled on the 11 W V5 Smart Motor's torque-speed curve for its cartridge, geared to the wheel. Acceleration, top speed, turning and stopping come from the robot's motors, gearing, wheel size and weight, plus wheel traction, turning scrub and brake or coast mode.
+- **V5 motor physics.** Battery sag, motor heating and the firmware's thermal current limits are modeled too. Every drive motor is modeled on the 11 W V5 Smart Motor's torque-speed curve for its cartridge, geared to the wheel. Acceleration, top speed, turning and stopping come from the robot's motors, gearing, wheel size and weight, plus wheel traction, turning scrub and brake or coast mode.
 - **Real robots.** Each one is built from V5 parts (C-channel, smart motors, the brain, omni and traction wheels, license plates) with a working DR4B, arm or chain-bar lift and a wrist claw. Tune the build (motor count, wheel rpm, wheel size, weight) and see the resulting speed, acceleration and turn rate.
 - **A tournament venue.** A gym floor, alliance stations, a field-control table, bleachers, overhead lights and a live audience scoreboard, all lit with image-based lighting.
 - **Sound.** Drive motors whine with speed and load, the lift hums, and the match buzzers play.
@@ -81,6 +81,10 @@ Placing takes real time: the lift travels to the top of the stack, and the wrist
 ### Drive physics
 
 `src/robot/drivetrain.ts` models each drive motor as a V5 11 W Smart Motor: 2.1 N·m stall torque with the red (100 rpm) cartridge, scaled for green (200) and blue (600). The motor torque falls linearly to zero at free speed, then is geared to the wheel. Forces at each wheel are capped by traction (μ·m·g). The chassis integrates them with the robot's mass and rotational inertia, with rolling resistance and turning scrub. In brake mode the motors' back-EMF stops the robot quickly; in coast mode it rolls.
+
+`src/robot/power.ts` adds the V5 battery and motor heat. The 12.8 V battery sags with the current drawn (shoving another robot or a wall can pull it near 11 V, so the motors lose speed and torque) and slowly as it drains. Each motor's current is capped at 2.5 A, and its temperature climbs with current squared. Like the real firmware, the current limit halves at 55 °C, drops to a quarter at 60 °C and stops the motor at 65 °C, so a match spent pushing at stall overheats the drive. The HUD shows battery voltage, charge and motor temperature, and the lift and intake draw current too.
+
+The chassis also squats back under acceleration, dips forward when braking and leans out in turns. Intake rollers pull nearby Pins and Cups into the mouth before the claw grabs them.
 
 ## How the game is modeled
 

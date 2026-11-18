@@ -229,6 +229,25 @@ function chamferedSquare(scale: number): [number, number][] {
   return [[f, c], [c, f], [-c, f], [-f, c], [-f, -c], [-c, -f], [c, -f], [f, -c]];
 }
 
+let grainTex: THREE.Texture | null = null;
+/** Fine noise used as a bump map for textured plastic. */
+function grainTexture(): THREE.Texture {
+  if (grainTex) return grainTex;
+  grainTex = canvasTexture(128, 128, (g, w, h) => {
+    const img = g.createImageData(w, h);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 100 + Math.random() * 110;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  });
+  grainTex.wrapS = grainTex.wrapT = THREE.RepeatWrapping;
+  grainTex.repeat.set(3, 3);
+  grainTex.colorSpace = THREE.NoColorSpace;
+  return grainTex;
+}
+
 let lineArtTex: THREE.Texture | null = null;
 /** Yellow line art on the black neutral Goal bases. */
 function goalLineArtTexture(): THREE.Texture {
@@ -339,14 +358,14 @@ class OverrideRuntime implements GameRuntime {
     const cupLow = new THREE.LatheGeometry(cupProfile([[CUP_TOP_R * 0.98, 0], [CUP_TOP_R * 0.98, 0.006], [CUP_TOP_R * 0.93, 0.008], [CUP_WAIST_R, c / 2]]), 28);
     const cupHigh = new THREE.LatheGeometry(cupProfile([[CUP_WAIST_R, c / 2], [CUP_TOP_R * 0.95, c - 0.008], [CUP_TOP_R, c - 0.005], [CUP_TOP_R, c]]), 28);
     this.geo = { pinLow, pinHigh, cupLow, cupHigh };
+    // Molded plastic: Pins have a fine textured (sand-blasted) finish, Cups a gray
+    // opaque half and a glossy clear half.
+    const grain = grainTexture();
+    const plastic = (color: number) => new THREE.MeshStandardMaterial({ color, roughness: 0.72, bumpMap: grain, bumpScale: 0.35 });
     this.mats = {
-      pin: {
-        red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.45 }),
-        blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.45 }),
-        yellow: new THREE.MeshStandardMaterial({ color: COLORS.yellow, roughness: 0.45 }),
-      },
-      cupOpaque: new THREE.MeshStandardMaterial({ color: 0x2f3237, roughness: 0.45, side: THREE.DoubleSide }),
-      cupClear: new THREE.MeshStandardMaterial({ color: 0xdcebff, roughness: 0.08, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false }),
+      pin: { red: plastic(COLORS.red), blue: plastic(COLORS.blue), yellow: plastic(COLORS.yellow) },
+      cupOpaque: new THREE.MeshStandardMaterial({ color: 0x4b4f55, roughness: 0.6, bumpMap: grain, bumpScale: 0.2, side: THREE.DoubleSide }),
+      cupClear: new THREE.MeshPhysicalMaterial({ color: 0xeef5ff, roughness: 0.06, metalness: 0, transparent: true, opacity: 0.3, clearcoat: 1, clearcoatRoughness: 0.05, side: THREE.DoubleSide, depthWrite: false }),
     };
     // Match Loads: 10 Cups, 10 alliance/yellow Pins and 1 yellow/yellow Pin per alliance.
     // Robot Skills: 7 Cups, 3 red/yellow and 4 blue/yellow Pins. The order is our choice.
@@ -379,19 +398,48 @@ class OverrideRuntime implements GameRuntime {
       g.fillRect(0, 0, w, h);
       const n = 6;
       const s = w / n;
+      // Foam tiles in two slightly different grays, like the official field renders.
       for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-        const base = 86 + Math.random() * 6;
-        g.fillStyle = `rgb(${base},${base + 2},${base + 7})`;
-        g.fillRect(i * s + 3, j * s + 3, s - 6, s - 6);
-        // Interlocking foam-tile edge teeth.
-        g.fillStyle = 'rgba(0,0,0,0.18)';
-        for (let k = 0; k < 10; k++) {
-          g.fillRect(i * s + (k + 0.25) * (s / 10), j * s, s / 20, 4);
-          g.fillRect(i * s, j * s + (k + 0.25) * (s / 10), 4, s / 20);
-        }
-        for (let k = 0; k < 700; k++) {
-          g.fillStyle = `rgba(255,255,255,${Math.random() * 0.035})`;
+        const base = (i + j) % 2 ? 92 : 84;
+        g.fillStyle = `rgb(${base},${base + 2},${base + 6})`;
+        g.fillRect(i * s, j * s, s, s);
+        for (let k = 0; k < 900; k++) {
+          g.fillStyle = Math.random() < 0.5 ? `rgba(255,255,255,${Math.random() * 0.04})` : `rgba(0,0,0,${Math.random() * 0.05})`;
           g.fillRect(i * s + Math.random() * s, j * s + Math.random() * s, 2, 2);
+        }
+      }
+      // Interlocking jigsaw seams between tiles.
+      g.strokeStyle = 'rgba(20,22,26,0.55)';
+      g.lineWidth = 2.5;
+      const teeth = 12;
+      const tw = s / teeth;
+      for (let k = 1; k < n; k++) {
+        for (const vertical of [true, false]) {
+          g.save();
+          // Draw every seam along local +x, then rotate the vertical ones into place.
+          if (vertical) {
+            g.translate(k * s, 0);
+            g.rotate(Math.PI / 2);
+          } else g.translate(0, k * s);
+          g.beginPath();
+          g.moveTo(0, 0);
+          for (let t = 0; t < n * teeth; t++) {
+            const a0 = t * tw;
+            const dir = t % 2 ? 1 : -1;
+            const r = tw * 0.24;
+            // Neck, then a round knob into the neighboring tile.
+            const cx = a0 + tw / 2;
+            const cy = dir * r * 1.25;
+            g.lineTo(a0 + tw * 0.4, 0);
+            for (let q = 0; q <= 12; q++) {
+              const phi = -0.7 + (q / 12) * (Math.PI + 1.4);
+              g.lineTo(cx - r * Math.cos(phi), cy + dir * r * Math.sin(phi));
+            }
+            g.lineTo(a0 + tw * 0.6, 0);
+            g.lineTo(a0 + tw, 0);
+          }
+          g.stroke();
+          g.restore();
         }
       }
       // Tape: 2" white lines; the North-West to South-East Autonomous Line is doubled.
@@ -511,7 +559,7 @@ class OverrideRuntime implements GameRuntime {
     for (const def of GOALS) {
       const baseH = GOAL_BASE_H[def.kind];
       const color = def.kind === 'alliance' ? COLORS[def.alliance!] : 0x18191b;
-      const m = b.mat(color, { rough: 0.55 });
+      const m = b.mat(color, { rough: 0.62 });
       const ring = (scale: number, y: number) => chamferedSquare(scale).map(([x, z]) => new THREE.Vector3(def.x + x, y, def.z + z));
       const solid = (pts: THREE.Vector3[]) => {
         const mesh = new THREE.Mesh(new ConvexGeometry(pts), m);
@@ -820,15 +868,43 @@ class OverrideRuntime implements GameRuntime {
     anim.lift += THREE.MathUtils.clamp(liftTarget - anim.lift, -liftRate * dt, liftRate * dt);
     anim.claw += THREE.MathUtils.clamp((this.held.length && !(this.job && this.job.t > this.job.duration - 0.2) ? 1 : 0.15) - anim.claw, -6 * dt, 6 * dt);
     anim.wrist += THREE.MathUtils.clamp(this.wristTarget - anim.wrist, -9 * dt, 9 * dt);
+    // Current for the battery model: a moving lift, the intake, and holding a load up.
+    const liftMoving = Math.abs(liftTarget - anim.lift) > 0.01;
+    robot.mechAmps = (liftMoving ? 2.2 : this.held.length ? 0.6 : 0.2) + (anim.intake !== 0 ? 1.2 : 0);
 
-    // Intake: grab the element in front of the claw / rollers.
+    // Intake rollers pull nearby elements toward the mouth before they're grabbed.
+    if (enabled && ctl.intake && !this.job && this.held.length < robot.cfg.capacity) {
+      const front = robot.cfg.length / 2;
+      for (const p of this.pieces) {
+        if (p.state !== 'loose' || p.nestedIn || this.held.some((h) => h.kind === p.kind)) continue;
+        const t = p.body.translation();
+        const [f, side] = robot.toLocal(t.x, t.z);
+        const reach = robot.cfg.intakeReach + 0.1;
+        if (f < front - 0.05 || f > front + reach || Math.abs(side) > robot.cfg.intakeWidth / 2 + 0.06 || t.y > 0.3) continue;
+        // Roller contact: drag toward the center of the mouth and back toward the robot.
+        const [mx, mz] = robot.toWorld(front, 0);
+        const dx = mx - t.x;
+        const dz = mz - t.z;
+        const d = Math.hypot(dx, dz) || 1;
+        const pull = 0.9;
+        const v = p.body.linvel();
+        const tx = robot.cmd.vx + (dx / d) * pull;
+        const tz = robot.cmd.vz + (dz / d) * pull;
+        const k = Math.min(1, 12 * dt);
+        p.body.setLinvel({ x: v.x + (tx - v.x) * k, y: v.y, z: v.z + (tz - v.z) * k }, true);
+      }
+    }
+
+    // Intake: grab the element that has reached the claw / rollers.
     if (enabled && ctl.intake && !this.job && this.held.length < robot.cfg.capacity && this.intakeCooldown <= 0) {
       for (const p of this.pieces) {
         if (p.state !== 'loose') continue;
         const t = p.body.translation();
         // SG6: a robot may hold at most one Pin and one Cup.
         if (this.held.some((h) => h.kind === p.kind)) continue;
-        if (robot.inIntake(t.x, t.z, t.y, 0.3)) {
+        // Grabbed once it is right at the mouth (the rollers pulled it in).
+        const [f] = robot.toLocal(t.x, t.z);
+        if (robot.inIntake(t.x, t.z, t.y, 0.3) && f < robot.cfg.length / 2 + Math.max(robot.cfg.intakeReach * 0.6, 0.1)) {
           this.hold(p);
           this.intakeCooldown = 0.35;
           this.ctx.intook();

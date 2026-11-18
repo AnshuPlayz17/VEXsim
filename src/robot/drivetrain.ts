@@ -184,6 +184,17 @@ export function driverVoltages(
   return [left * k, right * k];
 }
 
+/**
+ * What the motors get from the battery: `voltage` scales the commanded voltage (battery
+ * sag), `limit` caps each motor's current (and so torque) as a fraction of its 2.5 A max.
+ * `amps` is written back: the average current per drive motor this step, A.
+ */
+export interface Supply {
+  voltage: number;
+  limit: number;
+  amps?: number;
+}
+
 /** Advance the chassis by dt under the given motor voltages. */
 export function stepDrive(
   type: DriveType,
@@ -194,6 +205,7 @@ export function stepDrive(
   u: Voltages,
   heading: number,
   dt: number,
+  supply: Supply = { voltage: 1, limit: 1 },
 ): ChassisState {
   const [fx, fz] = forwardOf(heading);
   const [rx, rz] = rightOf(heading);
@@ -207,12 +219,17 @@ export function stepDrive(
   const wheelsOnGround = type === 'xdrive' ? 4 : 2;
   const tractionPer = (p.mu * p.mass * G) / wheelsOnGround;
 
+  let ampSum = 0;
+  let ampN = 0;
   const motorForce = (n: number, volts: number, wheelSpeed: number) => {
-    let v = volts;
     // Brake mode shorts the motor at zero input (back-EMF braking); coast lets it spin free.
     if (Math.abs(volts) < 1e-3 && p.brake === 'coast') return 0;
-    if (Math.abs(volts) < 1e-3) v = 0;
-    return n * fs * (v - wheelSpeed / vFree);
+    const v = Math.abs(volts) < 1e-3 ? 0 : volts * supply.voltage;
+    // Torque (and current) follow the torque-speed line, capped by the current limit.
+    const frac = clamp(v - wheelSpeed / vFree, -supply.limit, supply.limit);
+    ampSum += Math.abs(frac) * 2.5 * n;
+    ampN += n;
+    return n * fs * frac;
   };
 
   let Ff = 0;
@@ -260,6 +277,7 @@ export function stepDrive(
   vf += dvf;
   vr += dvr;
   w += dw;
+  supply.amps = ampN ? ampSum / ampN : 0;
   if (Math.abs(vf) < 0.004 && Math.abs(u.reduce((a, b) => a + Math.abs(b), 0)) < 1e-3) vf = 0;
   if (Math.abs(w) < 0.01 && Math.abs(u.reduce((a, b) => a + Math.abs(b), 0)) < 1e-3) w = 0;
 
