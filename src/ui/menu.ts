@@ -2,7 +2,7 @@ import type { Settings, RobotTweaks } from '../config';
 import { DEFAULT_SETTINGS, saveSettings } from '../config';
 import type { GameDef, GameId, ModeId } from '../games/types';
 import type { RobotConfig } from '../robot/robot';
-import { DRIVE_TYPE_LABELS, type DriveType } from '../robot/drivetrain';
+import { DRIVE_TYPE_LABELS, type DriveType, driveSummary } from '../robot/drivetrain';
 import { CONTROL_HELP } from '../core/input';
 import { CAMERA_LABELS } from '../core/camera';
 import { bestRun, clearStats, isTimedDrill, loadRuns, mean, toCsv, type RunRecord } from '../core/stats';
@@ -25,16 +25,21 @@ const overlay = () => document.getElementById('overlay')!;
 export function robotFor(game: GameDef, s: Settings): RobotConfig {
   const preset = game.presets.find((p) => p.id === s.preset[game.id]) ?? game.presets[0];
   const t: RobotTweaks = s.tweaks[preset.id] ?? {};
+  const drive = t.drive ?? preset.drive;
+  const wheelRpm = t.wheelRpm ?? preset.power.wheelRpm;
   return {
     ...preset,
-    drive: t.drive ?? preset.drive,
+    drive,
     capacity: t.capacity ?? preset.capacity,
-    params: {
-      ...preset.params,
-      maxSpeed: t.maxSpeed ?? preset.params.maxSpeed,
-      maxAccel: t.maxAccel ?? preset.params.maxAccel,
-      maxDecel: Math.max(preset.params.maxDecel, (t.maxAccel ?? preset.params.maxAccel) * 1.4),
-      maxTurnRate: t.maxTurnRate ?? preset.params.maxTurnRate,
+    power: {
+      ...preset.power,
+      // Pick the cartridge a team would use for that wheel speed.
+      cartridge: wheelRpm > 200 ? 'blue' : wheelRpm > 100 ? 'green' : 'red',
+      wheelRpm,
+      wheelDia: (t.wheelIn ?? preset.power.wheelDia / 0.0254) * 0.0254,
+      motors: drive === 'xdrive' ? Math.max(4, Math.round((t.motors ?? preset.power.motors) / 4) * 4) : t.motors ?? preset.power.motors,
+      mass: (t.weightLb ?? preset.power.mass / 0.4536) * 0.4536,
+      brake: t.brake ?? preset.power.brake,
     },
   };
 }
@@ -72,25 +77,21 @@ export class Ui {
   // ------------------------------------------------------------------ home
   home(): void {
     const runs = loadRuns();
-    const cards = Object.values(this.host.games)
-      .map((g) => {
-        const best = bestRun(runs, g.id, 'match');
-        return `
-        <button class="game-card ${g.id}" data-game="${g.id}">
-          <div class="gc-program">${g.program} · ${g.season}</div>
-          <div class="gc-name">${g.name}</div>
-          <div class="gc-blurb">${g.blurb}</div>
-          <div class="gc-foot"><span>${g.presets.length} robots · ${g.modes.length} modes</span><span>Best match: <b>${fmtResult(best)}</b></span></div>
-        </button>`;
-      })
-      .join('');
+    const g = this.host.games.override;
+    const best = (m: ModeId) => fmtResult(bestRun(runs, g.id, m));
     const o = this.show(`
       <div class="screen home">
         <header class="brand">
           <div class="logo">VEX<span>sim</span></div>
-          <div class="tag">Driver practice for VEX V5RC <b>Override</b> and FRC <b>REBUILT</b>. Real field layouts, match clocks, scoring and drivetrain physics, right in your browser.</div>
+          <div class="tag">A driver-practice simulator for <b>VEX V5RC Override</b> (2026–27). Official field layout and game elements, V5 motor physics, real match timing and scoring, in your browser.</div>
         </header>
-        <div class="cards">${cards}</div>
+        <button class="game-card override hero" data-play>
+          <div class="gc-program">${g.program} · ${g.season}</div>
+          <div class="gc-name">${g.name}</div>
+          <div class="gc-blurb">${g.blurb}</div>
+          <div class="gc-foot"><span>${g.presets.length} robots · ${g.modes.length} modes</span><span>Best match <b>${best('match')}</b> · Best skills <b>${best('skills')}</b></span></div>
+          <div class="gc-cta">DRIVE ▶</div>
+        </button>
         <nav class="links">
           <button data-nav="stats">📈 Stats &amp; history</button>
           <button data-nav="controls">🎮 Controls</button>
@@ -98,13 +99,11 @@ export class Ui {
         </nav>
         <footer class="foot">Plug in any gamepad (Xbox, PlayStation, Logitech…) or use the keyboard. Settings and personal bests are saved in this browser.</footer>
       </div>`);
-    o.querySelectorAll<HTMLElement>('[data-game]').forEach((b) =>
-      b.addEventListener('click', () => {
-        this.s.game = b.dataset.game as GameId;
-        this.save();
-        this.setup();
-      }),
-    );
+    o.querySelector('[data-play]')!.addEventListener('click', () => {
+      this.s.game = 'override';
+      this.save();
+      this.setup();
+    });
     this.bindNav(o);
   }
 
@@ -135,7 +134,7 @@ export class Ui {
     if (s.startIndex >= poses.length) s.startIndex = 0;
     const runs = loadRuns();
     const best = bestRun(runs, g.id, mode);
-    const frc = g.id === 'rebuilt';
+    const summary = driveSummary(cfg.power, cfg.length, cfg.width);
 
     const modes = g.modes
       .map(
@@ -152,7 +151,7 @@ export class Ui {
         <label class="opt ${p.id === preset.id ? 'on' : ''}">
           <input type="radio" name="preset" value="${p.id}" ${p.id === preset.id ? 'checked' : ''}>
           <div><b>${p.name}</b><small>${p.description}</small>
-          <small class="spec">${(p.length / 0.0254).toFixed(1)}″ × ${(p.width / 0.0254).toFixed(1)}″ × ${(p.height / 0.0254).toFixed(1)}″ tall · ${(p.params.maxSpeed * 3.281).toFixed(1)} ft/s · holds ${p.capacity}</small>
+          <small class="spec">${(p.length / 0.0254).toFixed(0)}″ × ${(p.width / 0.0254).toFixed(0)}″ · ${p.power.motors} motors · ${p.power.wheelRpm} rpm on ${(p.power.wheelDia / 0.0254).toFixed(2)}″ wheels · ${(p.power.mass / 0.4536).toFixed(1)} lb</small>
           ${p.id === preset.id && p.stats ? `<small class="statline">${Object.entries(p.stats).map(([k, v]) => `<span><i>${k}</i> ${v}</span>`).join('')}</small>` : ''}
           ${p.id === preset.id && p.source ? `<small class="src">${p.source}</small>` : ''}</div>
         </label>`,
@@ -169,7 +168,7 @@ export class Ui {
     const o = this.show(`
       <div class="screen setup">
         <header class="bar">
-          <button class="ghost-btn" data-nav="home">← Games</button>
+          <button class="ghost-btn" data-nav="home">← Home</button>
           <div class="crumb">${g.program} <b>${g.name}</b> <span>${g.season}</span></div>
           <button class="ghost-btn" data-nav="controls">Controls</button>
         </header>
@@ -183,10 +182,22 @@ export class Ui {
             <div class="opts">${robots}</div>
             <h4>Tune this robot</h4>
             <label class="sel"><span>Drivetrain</span><select id="drive">${driveOpts}</select></label>
-            ${slider('maxSpeed', 'Top speed', 0.8, frc ? 6 : 3.2, 0.05, cfg.params.maxSpeed, ' m/s')}
-            ${slider('maxAccel', 'Acceleration', 2, frc ? 16 : 10, 0.25, cfg.params.maxAccel, ' m/s²')}
-            ${slider('maxTurnRate', 'Turn rate', 2, 14, 0.25, cfg.params.maxTurnRate, ' rad/s')}
-            ${slider('capacity', frc ? 'Hopper capacity' : 'Pieces held', 1, frc ? 80 : 6, 1, cfg.capacity)}
+            <label class="sel"><span>Drive motors</span><select id="motors">${[4, 6, 8]
+              .map((n) => `<option value="${n}" ${n === cfg.power.motors ? 'selected' : ''}>${n} × 11W</option>`)
+              .join('')}</select></label>
+            <label class="sel"><span>Wheel speed</span><select id="rpm">${[200, 257, 300, 333, 360, 400, 450, 480, 600]
+              .map((n) => `<option value="${n}" ${n === cfg.power.wheelRpm ? 'selected' : ''}>${n} rpm</option>`)
+              .join('')}</select></label>
+            <label class="sel"><span>Wheels</span><select id="wheel">${[2.75, 3.25, 4]
+              .map((n) => `<option value="${n}" ${Math.abs(n - cfg.power.wheelDia / 0.0254) < 0.01 ? 'selected' : ''}>${n}″</option>`)
+              .join('')}</select></label>
+            ${slider('weight', 'Robot weight', 8, 22, 0.5, +(cfg.power.mass / 0.4536).toFixed(1), ' lb')}
+            <label class="sel"><span>Stop mode</span><select id="brake">
+              <option value="brake" ${cfg.power.brake === 'brake' ? 'selected' : ''}>Brake</option>
+              <option value="coast" ${cfg.power.brake === 'coast' ? 'selected' : ''}>Coast</option>
+            </select></label>
+            ${slider('capacity', 'Pieces held', 1, 4, 1, cfg.capacity)}
+            <div class="drive-sum"><span><b>${(summary.topSpeed * 3.281).toFixed(1)}</b> ft/s top speed</span><span><b>${(summary.accel / 9.81).toFixed(2)}</b> g launch</span><span><b>${((summary.turnRate * 180) / Math.PI).toFixed(0)}</b>°/s turn</span></div>
             <button class="link" id="reset-robot">Reset to preset</button>
           </section>
           <section>
@@ -200,23 +211,6 @@ export class Ui {
             <label class="sel"><span>Camera</span><select id="camera">${Object.entries(CAMERA_LABELS)
               .map(([k, v]) => `<option value="${k}" ${k === s.camera ? 'selected' : ''}>${v}</option>`)
               .join('')}</select></label>
-            ${
-              frc
-                ? `<h4>REBUILT options</h4>
-            <label class="sel"><span>Aim assist</span><select id="aim">
-              <option value="full" ${s.aimAssist === 'full' ? 'selected' : ''}>Full: turret + shoot-on-the-move</option>
-              <option value="distance" ${s.aimAssist === 'distance' ? 'selected' : ''}>Speed only: you aim the robot</option>
-              <option value="manual" ${s.aimAssist === 'manual' ? 'selected' : ''}>Manual: fixed hood, [ ] sets speed</option>
-            </select></label>
-            <label class="sel"><span>AUTO winner</span><select id="autowin">
-              <option value="byScore" ${s.autoWinner === 'byScore' ? 'selected' : ''}>Compare my AUTO FUEL vs opponent</option>
-              <option value="me" ${s.autoWinner === 'me' ? 'selected' : ''}>I win AUTO (HUB off in shifts 1 & 3)</option>
-              <option value="opponent" ${s.autoWinner === 'opponent' ? 'selected' : ''}>Opponent wins (HUB off in 2 & 4)</option>
-            </select></label>
-            ${slider('oppAuto', 'Opponent AUTO FUEL', 0, 40, 1, s.opponentAutoFuel)}
-            ${check('showTrajectory', 'Show shot trajectory')}`
-                : ''
-            }
             <h4>Driver feel</h4>
             ${slider('deadzone', 'Stick deadzone', 0, 0.3, 0.01, s.tuning.deadzone)}
             ${slider('expo', 'Drive expo (curve)', 0, 1, 0.05, s.tuning.expo)}
@@ -268,11 +262,8 @@ export class Ui {
         this.save();
       });
     };
-    bindRange('maxSpeed', (v) => (tweak().maxSpeed = v));
-    bindRange('maxAccel', (v) => (tweak().maxAccel = v));
-    bindRange('maxTurnRate', (v) => (tweak().maxTurnRate = v));
     bindRange('capacity', (v) => (tweak().capacity = v));
-    bindRange('oppAuto', (v) => (s.opponentAutoFuel = v));
+    bindRange('weight', (v) => (tweak().weightLb = v));
     bindRange('deadzone', (v) => (s.tuning.deadzone = v));
     bindRange('expo', (v) => (s.tuning.expo = v));
     bindRange('turnExpo', (v) => (s.tuning.turnExpo = v));
@@ -285,12 +276,14 @@ export class Ui {
         if (rerender) this.setup();
       });
     };
-    bindSel('drive', (v) => (tweak().drive = v as DriveType));
+    bindSel('drive', (v) => (tweak().drive = v as DriveType), true);
+    bindSel('motors', (v) => (tweak().motors = parseInt(v, 10)), true);
+    bindSel('rpm', (v) => (tweak().wheelRpm = parseInt(v, 10)), true);
+    bindSel('wheel', (v) => (tweak().wheelIn = parseFloat(v)), true);
+    bindSel('brake', (v) => (tweak().brake = v as 'coast' | 'brake'), true);
     bindSel('station', (v) => (s.station[g.id] = v), true);
     bindSel('start', (v) => (s.startIndex = parseInt(v, 10)));
     bindSel('camera', (v) => (s.camera = v as Settings['camera']));
-    bindSel('aim', (v) => (s.aimAssist = v as Settings['aimAssist']));
-    bindSel('autowin', (v) => (s.autoWinner = v as Settings['autoWinner']));
     bindSel('quality', (v) => (s.quality = v as Settings['quality']));
     o.querySelectorAll<HTMLInputElement>('[data-bool]').forEach((el) =>
       el.addEventListener('change', () => {

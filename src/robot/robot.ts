@@ -1,39 +1,22 @@
 import * as THREE from 'three';
 import { RAPIER, ROBOT_GROUPS, ROBOT_MOVE_FILTER, groups, GROUP } from '../core/physics';
 import { yawQuat } from '../core/builder';
-import { clamp, wrapAngle } from '../core/units';
+import { wrapAngle } from '../core/units';
 import { type RobotAnim, type RobotModel, type ModelBuilder, defaultAnim } from './models/types';
 import {
-  type ChassisCommand,
+  type ChassisState,
   type DriveInput,
-  type DriveParams,
   type DriveType,
   type DriverTuning,
+  type Powertrain,
+  type Voltages,
+  driverVoltages,
   forwardOf,
   rightOf,
-  stepChassis,
-  targetCommand,
+  stepDrive,
 } from './drivetrain';
 
 export type Alliance = 'red' | 'blue';
-
-export interface ShooterSpec {
-  /** Balls per second. */
-  rate: number;
-  /** Preferred launch angle, rad. */
-  angle: number;
-  /** Turret aims independently of the chassis; otherwise the whole robot aims. */
-  turret: boolean;
-  /** Which way a chassis-fixed shooter fires. */
-  facing: 'front' | 'back';
-  /** Hood range, rad. */
-  hoodMin: number;
-  hoodMax: number;
-  /** Max exit speed, m/s. */
-  speedMax: number;
-  /** Muzzle height above the floor, m. */
-  height: number;
-}
 
 export interface RobotConfig {
   id: string;
@@ -43,36 +26,29 @@ export interface RobotConfig {
   team?: string;
   /** Where the design comes from. */
   source?: string;
-  /** Frame length front-to-back, m (includes bumpers for FRC). */
+  /** Frame length front-to-back, m. */
   length: number;
   /** Frame width side-to-side, m. */
   width: number;
   height: number;
   drive: DriveType;
-  params: DriveParams;
+  power: Powertrain;
   /** Game pieces the robot can carry. */
   capacity: number;
   intakeWidth: number;
   /** How far ahead of the frame the intake reaches, m. */
   intakeReach: number;
-  /** FRC shooter. */
-  shooter?: ShooterSpec;
-  /** Seconds to climb one tower level (FRC). */
-  climbTime?: number;
-  /** Highest tower level the mechanism can reach (FRC). */
-  maxClimb?: 0 | 1 | 2 | 3;
-  /** Seconds for the lift to travel its full range (VEX). */
+  /** Seconds for the lift to travel its full range. */
   liftTime?: number;
-  style: 'vex' | 'frc';
   model: ModelBuilder;
   /** Short stat lines for the setup screen. */
   stats?: Record<string, string>;
 }
 
 /**
- * A driven robot. It is a kinematic body moved by Rapier's character controller,
- * so it collides solidly with the field (walls, bumps, trench arms) while
- * shoving loose game pieces out of the way.
+ * A driven robot. Its motion comes from the V5 motor model in drivetrain.ts;
+ * Rapier's character controller then moves it through the field so it
+ * collides solidly with walls and goals while shoving game pieces aside.
  */
 export class Robot {
   readonly body: RAPIER.RigidBody;
@@ -83,17 +59,15 @@ export class Robot {
   readonly model: RobotModel;
   /** Mechanism state for the model, set by the game each step. */
   anim: RobotAnim = defaultAnim();
-  /** When set, the chassis turns itself to this heading (shooter auto-align). */
-  aimHeading: number | null = null;
+  /** Last motor voltages (for sound and the HUD). */
+  voltages: Voltages = [0, 0];
   private readonly rotateTestShape: RAPIER.Cuboid;
 
   heading = 0;
-  cmd: ChassisCommand = { vx: 0, vz: 0, omega: 0 };
+  cmd: ChassisState = { vx: 0, vz: 0, omega: 0 };
   private vy = 0;
-  /** Locked in place (climbing, disabled). */
+  /** Locked in place. */
   frozen = false;
-  /** Extra visual lift (climbing animation). */
-  lift = 0;
   distance = 0;
   private pitch = 0;
   private roll = 0;
@@ -181,17 +155,11 @@ export class Robot {
   }
 
   update(dt: number, input: DriveInput, enabled: boolean, driverYaw: number, tuning: DriverTuning): void {
-    const p: DriveParams = this.cfg.params;
     const active = enabled && !this.frozen;
-    const target = active
-      ? targetCommand(this.cfg.drive, input, this.heading, driverYaw, p, tuning)
-      : { vx: 0, vz: 0, omega: 0 };
-    if (active && this.aimHeading !== null) {
-      // Auto-align: a P controller on heading error, like a real "aim" button.
-      const err = wrapAngle(this.aimHeading - this.heading);
-      target.omega = clamp(err * 9, -p.maxTurnRate, p.maxTurnRate);
-    }
-    this.cmd = stepChassis(this.cfg.drive, this.cmd, target, this.heading, p, dt);
+    this.voltages = active
+      ? driverVoltages(this.cfg.drive, input, this.heading, driverYaw, tuning)
+      : this.cfg.drive === 'xdrive' ? [0, 0, 0, 0] : [0, 0];
+    this.cmd = stepDrive(this.cfg.drive, this.cfg.power, this.cfg.length, this.cfg.width, this.cmd, this.voltages, this.heading, dt);
     if (this.frozen) this.cmd = { vx: 0, vz: 0, omega: 0 };
 
     // Rotation: refuse to rotate into a wall (the controller only resolves translation).
@@ -229,11 +197,6 @@ export class Robot {
     const [ffx, ffz] = forwardOf(this.heading);
     const along = this.cmd.vx * ffx + this.cmd.vz * ffz;
     this.anim.wheelSpin += ((Math.sign(along) || 1) * sp + Math.abs(this.cmd.omega) * this.cfg.width * 0.4) * dt / 0.05;
-    if (sp > 0.05) {
-      const [rrx, rrz] = rightOf(this.heading);
-      const right = this.cmd.vx * rrx + this.cmd.vz * rrz;
-      this.anim.driveDir = Math.atan2(-right, along);
-    }
     const t = this.body.translation();
     this.body.setNextKinematicTranslation({ x: t.x + mv.x, y: Math.max(-0.05, t.y + mv.y), z: t.z + mv.z });
     this.body.setNextKinematicRotation(yawQuat(this.heading));
@@ -290,12 +253,12 @@ export class Robot {
     const hb = this.groundHeight(t.x - fx * hl, t.z - fz * hl);
     const hr = this.groundHeight(t.x + rx * hw, t.z + rz * hw);
     const hL = this.groundHeight(t.x - rx * hw, t.z - rz * hw);
-    const targetPitch = this.lift > 0 ? 0 : Math.atan2(hf - hb, 2 * hl);
-    const targetRoll = this.lift > 0 ? 0 : Math.atan2(hr - hL, 2 * hw);
+    const targetPitch = Math.atan2(hf - hb, 2 * hl);
+    const targetRoll = Math.atan2(hr - hL, 2 * hw);
     this.pitch += (targetPitch - this.pitch) * alpha;
     this.roll += (targetRoll - this.roll) * alpha;
     this.groundY = Math.max(t.y, (hf + hb) / 2);
-    this.mesh.position.set(t.x, this.groundY + this.lift, t.z);
+    this.mesh.position.set(t.x, this.groundY, t.z);
     this.mesh.rotation.set(0, this.heading, 0);
     // Local +x is forward, so pitch is a rotation about local z and roll about local x.
     this.visual.rotation.set(-this.roll, 0, this.pitch, 'YXZ');

@@ -9,7 +9,7 @@ export interface Phase {
   kind: PhaseKind;
   /** Seconds. */
   duration: number;
-  /** Phases sharing a period are shown as one countdown (e.g. FRC TELEOP shifts). */
+  /** Phases sharing a period are shown as one countdown (e.g. driver + endgame). */
   period: string;
 }
 

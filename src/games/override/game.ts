@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { RAPIER, PIECE_GROUPS } from '../../core/physics';
 import { FieldBuilder, canvasTexture } from '../../core/builder';
 import { IN, FT } from '../../core/units';
+
+const LB = 0.4536;
 import type { Phase } from '../../core/match';
 import type { Action, ControlState } from '../../core/input';
 import type { RobotConfig, Alliance } from '../../robot/robot';
@@ -85,9 +87,9 @@ const PRESETS: RobotConfig[] = [
     source: 'Inspired by early-season Override reveals (standoff-linkage DR4B claw bots, e.g. 8059A/8059Y).',
     length: 15 * IN, width: 15 * IN, height: 14 * IN,
     drive: 'tank',
-    params: { maxSpeed: 1.95, maxAccel: 5.2, maxDecel: 8, maxTurnRate: 6.2, maxTurnAccel: 28, trackWidth: 0.33 },
-    capacity: 2, intakeWidth: 0.2, intakeReach: 0.12, liftTime: 0.9, style: 'vex',
-    stats: { Drive: '6× 11W, 450 RPM, 3.25" omni/traction', Lift: 'DR4B to ~42"', Holds: 'claw + 1 in the tray' },
+    power: { motors: 6, cartridge: 'blue', wheelRpm: 450, wheelDia: 3.25 * IN, mass: 14 * LB, mu: 0.9, trackWidth: 12.5 * IN, wheelbase: 11 * IN, scrub: 0.22, brake: 'brake' },
+    capacity: 2, intakeWidth: 0.2, intakeReach: 0.12, liftTime: 0.9,
+    stats: { Lift: 'DR4B to ~42"', Holds: 'claw + 1 in the tray' },
     model: vexModel({ team: '2026A', length: 15, width: 15, drive: 'tank6', wheel: 3.25, cartridge: 'blue', lift: 'dr4b', liftMin: 3, liftMax: 42, rollers: true, accent: 0xe8862a }),
   },
   {
@@ -97,9 +99,9 @@ const PRESETS: RobotConfig[] = [
     source: 'Based on VEX’s official Override Hero Bot, Flex (arm + claw).',
     length: 16 * IN, width: 14 * IN, height: 13 * IN,
     drive: 'arcade',
-    params: { maxSpeed: 1.3, maxAccel: 4.5, maxDecel: 7, maxTurnRate: 4.8, maxTurnAccel: 22, trackWidth: 0.3 },
-    capacity: 1, intakeWidth: 0.16, intakeReach: 0.13, liftTime: 1.1, style: 'vex',
-    stats: { Drive: '4× 11W, 200 RPM, 4" omni', Lift: 'Single arm to ~26"', Holds: '1 in the claw' },
+    power: { motors: 4, cartridge: 'green', wheelRpm: 200, wheelDia: 4 * IN, mass: 11 * LB, mu: 0.75, trackWidth: 12 * IN, wheelbase: 12 * IN, scrub: 0.12, brake: 'brake' },
+    capacity: 1, intakeWidth: 0.16, intakeReach: 0.13, liftTime: 1.1,
+    stats: { Lift: 'Single arm to ~26"', Holds: '1 in the claw' },
     model: vexModel({ team: '2026B', length: 16, width: 14, drive: 'tank4', wheel: 4, cartridge: 'green', lift: 'arm', liftMin: 2, liftMax: 26, rollers: false, accent: 0x2e9be6 }),
   },
   {
@@ -109,9 +111,9 @@ const PRESETS: RobotConfig[] = [
     source: 'Forklift / chain-bar stacker concept from the Override design discussions.',
     length: 15 * IN, width: 15 * IN, height: 13 * IN,
     drive: 'splitArcade',
-    params: { maxSpeed: 2.35, maxAccel: 4.8, maxDecel: 7.5, maxTurnRate: 7, maxTurnAccel: 30, trackWidth: 0.33 },
-    capacity: 2, intakeWidth: 0.26, intakeReach: 0.14, liftTime: 0.8, style: 'vex',
-    stats: { Drive: '6× 11W, 600 RPM, 2.75" wheels', Lift: 'Chain-bar to ~32"', Holds: 'claw + 1 in the rollers' },
+    power: { motors: 6, cartridge: 'blue', wheelRpm: 600, wheelDia: 2.75 * IN, mass: 13 * LB, mu: 0.9, trackWidth: 12.5 * IN, wheelbase: 11 * IN, scrub: 0.22, brake: 'brake' },
+    capacity: 2, intakeWidth: 0.26, intakeReach: 0.14, liftTime: 0.8,
+    stats: { Lift: 'Chain-bar to ~32"', Holds: 'claw + 1 in the rollers' },
     model: vexModel({ team: '2026C', length: 15, width: 15, drive: 'tank6', wheel: 2.75, cartridge: 'blue', lift: 'chainbar', liftMin: 3, liftMax: 32, rollers: true, accent: 0x7b4fd6 }),
   },
   {
@@ -121,9 +123,9 @@ const PRESETS: RobotConfig[] = [
     source: 'Holonomic “S-bot” style seen in Override design threads.',
     length: 16 * IN, width: 16 * IN, height: 13 * IN,
     drive: 'xdrive',
-    params: { maxSpeed: 1.75, maxAccel: 4.2, maxDecel: 6.5, maxTurnRate: 5.5, maxTurnAccel: 24, trackWidth: 0.34 },
-    capacity: 1, intakeWidth: 0.18, intakeReach: 0.13, liftTime: 1.0, style: 'vex',
-    stats: { Drive: '4× 11W, 600 RPM, 3.25" omni at 45°', Lift: 'Arm to ~30"', Holds: '1 in the claw' },
+    power: { motors: 4, cartridge: 'blue', wheelRpm: 600, wheelDia: 3.25 * IN, mass: 12 * LB, mu: 0.75, trackWidth: 13 * IN, wheelbase: 13 * IN, scrub: 0, brake: 'brake' },
+    capacity: 1, intakeWidth: 0.18, intakeReach: 0.13, liftTime: 1.0,
+    stats: { Lift: 'Arm to ~30"', Holds: '1 in the claw' },
     model: vexModel({ team: '2026X', length: 16, width: 16, drive: 'xdrive', wheel: 3.25, cartridge: 'blue', lift: 'arm', liftMin: 2, liftMax: 30, rollers: false, accent: 0x18b38a }),
   },
 ];

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { autoWinner, canPlace, isInMidfield, scoreOverride, visibleHalves, type GoalState, type OverrideState, type PinItem } from '../src/games/override/rules';
-import { flightAt, hubActive, launchSpeedFor, scoreRebuilt, solveShot, towerPoints } from '../src/games/rebuilt/rules';
 
 const goal = (o: Partial<GoalState>): GoalState => ({ id: 'g', kind: 'short', quadrant: 'W', stack: [], ...o });
 const state = (goals: GoalState[], o: Partial<OverrideState> = {}): OverrideState => ({
@@ -73,63 +72,5 @@ describe('Override scoring (per Pin half)', () => {
     expect(isInMidfield(0, 0)).toBe(true);
     expect(isInMidfield(0.3, 0.29)).toBe(true);
     expect(isInMidfield(0.31, 0.31)).toBe(false);
-  });
-});
-
-describe('REBUILT rules', () => {
-  it('AUTO winner sits out shifts 1 and 3', () => {
-    expect(hubActive('red', 'auto', null)).toBe(true);
-    expect(hubActive('red', 'transition', 'red')).toBe(true);
-    expect(hubActive('red', 'shift1', 'red')).toBe(false);
-    expect(hubActive('red', 'shift2', 'red')).toBe(true);
-    expect(hubActive('red', 'shift3', 'red')).toBe(false);
-    expect(hubActive('red', 'shift4', 'red')).toBe(true);
-    expect(hubActive('blue', 'shift1', 'red')).toBe(true);
-    expect(hubActive('blue', 'shift2', 'red')).toBe(false);
-    expect(hubActive('red', 'endgame', 'red')).toBe(true);
-  });
-
-  it('tower points', () => {
-    expect(towerPoints(1, true)).toBe(15);
-    expect(towerPoints(3, true)).toBe(15);
-    expect([0, 1, 2, 3].map((l) => towerPoints(l as 0 | 1 | 2 | 3, false))).toEqual([0, 10, 20, 30]);
-  });
-
-  it('score and ranking point thresholds', () => {
-    const s = scoreRebuilt({ autoFuel: 20, teleopFuel: 80, inactiveFuel: 30, autoTower: 1, endTower: 3 });
-    expect(s.fuelPoints).toBe(100);
-    expect(s.towerPoints).toBe(45);
-    expect(s.total).toBe(145);
-    expect(s.energizedRP).toBe(true);
-    expect(s.superchargedRP).toBe(false);
-    expect(s.traversalRP).toBe(false);
-  });
-
-  it('launch speed hits the target point', () => {
-    const d = 4;
-    const h = 1.2;
-    const a = (60 * Math.PI) / 180;
-    const v = launchSpeedFor(d, h, a)!;
-    const t = d / (v * Math.cos(a));
-    const y = v * Math.sin(a) * t - 0.5 * 9.81 * t * t;
-    expect(y).toBeCloseTo(h, 6);
-    expect(launchSpeedFor(1, 5, (10 * Math.PI) / 180)).toBeNull();
-  });
-
-  it('drag shortens a shot compared with a vacuum', () => {
-    const a = (50 * Math.PI) / 180;
-    const vac = flightAt(10, a, 6, 0)!;
-    const air = flightAt(10, a, 6)!;
-    expect(air.y).toBeLessThan(vac.y);
-  });
-
-  it('solved shots pass through the target on the way down', () => {
-    const d = 3.5;
-    const h = 1.45;
-    const shot = solveShot(d, h, (40 * Math.PI) / 180, (80 * Math.PI) / 180, 17)!;
-    expect(shot).not.toBeNull();
-    const r = flightAt(shot.speed, shot.angle, d)!;
-    expect(r.y).toBeCloseTo(h, 2);
-    expect(r.vy).toBeLessThan(0);
   });
 });

@@ -8,12 +8,11 @@ import { Session, type SessionResult } from './session';
 import { Hud } from './ui/hud';
 import { Ui, robotFor, type UiHost } from './ui/menu';
 import { OverrideGame } from './games/override/game';
-import { RebuiltGame } from './games/rebuilt/game';
 import type { GameDef, GameId } from './games/types';
 
 class App implements UiHost {
   settings: Settings = loadSettings();
-  games: Record<GameId, GameDef> = { override: OverrideGame, rebuilt: RebuiltGame };
+  games: Record<GameId, GameDef> = { override: OverrideGame };
   private renderer: THREE.WebGLRenderer;
   private input = new Input();
   private hud = new Hud();

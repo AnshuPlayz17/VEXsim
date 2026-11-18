@@ -321,7 +321,7 @@ export class Session {
       this.station.yaw,
       this.settings.tuning,
     );
-    this.runtime.update(dt, enabled ? ctl : { ...ctl, intake: false, outtake: false, score: false, climb: false });
+    this.runtime.update(dt, enabled ? ctl : { ...ctl, intake: false, outtake: false, score: false });
     this.world.step();
 
     if (running) {

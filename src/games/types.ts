@@ -5,7 +5,7 @@ import type { Action, ControlState } from '../core/input';
 import type { Robot, RobotConfig, Alliance } from '../robot/robot';
 import type { Settings } from '../config';
 
-export type GameId = 'override' | 'rebuilt';
+export type GameId = 'override';
 export type ModeId = 'match' | 'driver' | 'skills' | 'free' | 'gates' | 'sprint';
 
 export interface ModeDef {

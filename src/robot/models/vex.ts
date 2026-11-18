@@ -203,7 +203,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
     for (const r of rollerMeshes) r.rotation.y += a.intake * 0.5;
     for (const w of wheels) w.rotation.z = -a.wheelSpin;
   };
-  animate({ intake: 0, lift: liftMin, claw: 1, wrist: 0, turretYaw: 0, hood: 0, climb: 0, flywheel: 0, intakeDeploy: 0, driveDir: 0, wheelSpin: 0 });
+  animate({ intake: 0, lift: liftMin, claw: 1, wrist: 0, wheelSpin: 0 });
 
   return { root, animate, carry, liftRange: [liftMin, liftMax] };
 }

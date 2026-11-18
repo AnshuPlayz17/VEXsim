@@ -10,25 +10,12 @@ export interface RobotAnim {
   claw: number;
   /** Wrist roll, rad (VEX flipping). */
   wrist: number;
-  /** Turret yaw relative to the chassis, rad (FRC). */
-  turretYaw: number;
-  /** Hood angle, rad from horizontal (FRC). */
-  hood: number;
-  /** Climber extension, m (FRC). */
-  climb: number;
-  /** Shooter wheels spinning (0..1). */
-  flywheel: number;
-  /** Intake deployed (0 stowed .. 1 out) (FRC). */
-  intakeDeploy: number;
-  /** Direction of travel relative to the chassis, rad (swerve modules steer to it). */
-  driveDir: number;
   /** Accumulated wheel rotation, rad. */
   wheelSpin: number;
 }
 
 export const defaultAnim = (): RobotAnim => ({
-  intake: 0, lift: 0, claw: 1, wrist: 0, turretYaw: 0, hood: 0.9, climb: 0,
-  flywheel: 0, intakeDeploy: 0, driveDir: 0, wheelSpin: 0,
+  intake: 0, lift: 0, claw: 1, wrist: 0, wheelSpin: 0,
 });
 
 export interface RobotModel {

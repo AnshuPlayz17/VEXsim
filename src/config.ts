@@ -3,15 +3,18 @@ import type { GameId, ModeId } from './games/types';
 import type { Alliance } from './robot/robot';
 
 export type CameraMode = 'driver' | 'follow' | 'top' | 'pov';
-export type AimAssist = 'full' | 'distance' | 'manual';
-export type AutoWinnerSetting = 'byScore' | 'me' | 'opponent';
 
 /** Per-robot overrides the driver can tune in the setup screen. */
 export interface RobotTweaks {
   drive?: DriveType;
-  maxSpeed?: number;
-  maxAccel?: number;
-  maxTurnRate?: number;
+  /** Wheel rpm (gearing). */
+  wheelRpm?: number;
+  /** Wheel diameter, inches. */
+  wheelIn?: number;
+  motors?: number;
+  /** Robot weight, lb. */
+  weightLb?: number;
+  brake?: 'coast' | 'brake';
   capacity?: number;
 }
 
@@ -27,10 +30,6 @@ export interface Settings {
   fieldOriented: boolean;
   camera: CameraMode;
   showGhost: boolean;
-  aimAssist: AimAssist;
-  autoWinner: AutoWinnerSetting;
-  opponentAutoFuel: number;
-  showTrajectory: boolean;
   sound: boolean;
   quality: 'high' | 'low';
   countdown: boolean;
@@ -38,26 +37,22 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   game: 'override',
-  mode: { override: 'match', rebuilt: 'match' },
-  preset: { override: 'vex-tank-450', rebuilt: 'frc-swerve' },
+  mode: { override: 'match' },
+  preset: { override: 'vex-dr4b' },
   tweaks: {},
   alliance: 'red',
-  station: { override: 'red-left', rebuilt: 'red-2' },
+  station: { override: 'red-left' },
   startIndex: 0,
   tuning: { deadzone: 0.08, expo: 0.35, turnExpo: 0.45, slowScale: 0.4 },
   fieldOriented: true,
   camera: 'driver',
   showGhost: true,
-  aimAssist: 'distance',
-  autoWinner: 'byScore',
-  opponentAutoFuel: 6,
-  showTrajectory: true,
   sound: true,
   quality: 'high',
   countdown: true,
 };
 
-const KEY = 'vexsim.settings.v1';
+const KEY = 'vexsim.settings.v2';
 
 export function loadSettings(): Settings {
   try {
