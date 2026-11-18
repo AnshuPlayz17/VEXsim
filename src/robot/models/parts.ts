@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { IN } from '../../core/units';
 
 /**
- * Small library of robot parts (VEX and FRC) built from primitives, so robot
+ * Small library of VEX robot parts built from primitives, so robot
  * models read like the real thing without shipping any CAD files.
  * Conventions: robot-local +X is forward, +Y up, +Z to the robot's right.
  */
@@ -148,7 +148,7 @@ export function v5Battery(ctx: ModelCtx, parent: THREE.Object3D, x: number, y: n
   mesh(ctx, new THREE.BoxGeometry(3 * IN, 0.02 * IN, 1.6 * IN), mat(ctx, 0xd8d8d8, { rough: 0.8 }), parent, x, y + 0.86 * IN, z);
 }
 
-/** Omni wheel (VEX or FRC): hub + rollers around the rim. Axle along Z. Returns spinning group. */
+/** Omni wheel: hub + rollers around the rim. Axle along Z. Returns spinning group. */
 export function omniWheel(ctx: ModelCtx, parent: THREE.Object3D, dia: number, width: number, x: number, y: number, z: number, o: { hub?: number; roller?: number; rollers?: number } = {}): THREE.Group {
   const g = new THREE.Group();
   const r = dia / 2;
@@ -187,7 +187,7 @@ export function roller(ctx: ModelCtx, parent: THREE.Object3D, dia: number, len: 
   return r;
 }
 
-/** Canvas texture with team number text (FRC bumpers). */
+/** Canvas texture with team number text (license plates). */
 export function numberTexture(text: string, bg: string, fg: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 512;
