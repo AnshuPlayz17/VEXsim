@@ -39,13 +39,13 @@ export const OVERRIDE = {
 };
 
 /**
- * A Pin's tapered (cone) end always nests downward into the Goal or Cup, so its
- * `cone` color is the lower half and `prism` color the upper half.
+ * Pins are symmetric (a narrow tip, a taper and a center collar on each half), so
+ * either end can nest down into a Goal or Cup: `down` is the lower half's color.
  */
 export interface PinItem {
   type: 'pin';
-  cone: PinColor;
-  prism: PinColor;
+  down: PinColor;
+  up: PinColor;
 }
 export interface CupItem {
   type: 'cup';
@@ -101,12 +101,12 @@ export function visibleHalves(goal: GoalState): PinColor[] {
     if (item.type !== 'pin') return;
     const below = goal.stack[i - 1];
     const above = goal.stack[i + 1];
-    // Lower (cone) half sits in the Goal or in the Cup below; hidden if that Cup's opaque half is up.
-    const coneHidden = below?.type === 'cup' && below.opaqueUp;
-    // Upper (prism) half is inside the Cup above; hidden if that Cup's opaque half is down.
-    const prismHidden = above?.type === 'cup' && !above.opaqueUp;
-    if (!coneHidden) out.push(item.cone);
-    if (!prismHidden) out.push(item.prism);
+    // Lower half sits in the Goal or in the Cup below; hidden if that Cup's opaque half is up.
+    const downHidden = below?.type === 'cup' && below.opaqueUp;
+    // Upper half is inside the Cup above; hidden if that Cup's opaque half is down.
+    const upHidden = above?.type === 'cup' && !above.opaqueUp;
+    if (!downHidden) out.push(item.down);
+    if (!upHidden) out.push(item.up);
   });
   return out;
 }

@@ -7,7 +7,7 @@ import { OVERRIDE_FIELD as F, startingLayout } from '../games/override/game';
 import { OVERRIDE } from '../games/override/rules';
 
 const IN = 0.0254;
-const r1 = (v: number) => Math.round(v * 10) / 10;
+const r1 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const inch = (m: number) => r1(m / IN);
 
@@ -48,8 +48,10 @@ export function fieldSpec() {
       ...pt(g.x, g.z),
       height_in: inch(F.goalHeight[g.kind]),
       shape: 'octagonal, tapered',
-      baseAcross_in: inch(F.goalRadiusBottom * 2),
-      topAcross_in: inch(F.goalRadiusTop * 2),
+      baseAcrossFlats_in: inch(F.goal.flats),
+      topAcrossFlats_in: inch(F.goal.topFlats),
+      baseHeight_in: inch(F.goal.baseHeight[g.kind]),
+      color: g.kind === 'alliance' ? g.alliance : 'black',
       source: 'official field layout (VEXcode VR) and element dimensions',
     })),
     toggles: F.toggles.map((t) => ({
@@ -64,16 +66,33 @@ export function fieldSpec() {
     elements: {
       pin: {
         length_in: inch(F.pin.length),
-        acrossCorners_in: inch(F.pin.radius * 2),
+        collarAcrossCorners_in: inch(F.pin.radius * 2),
+        acrossFlats_in: 3.02,
         tipAcross_in: inch(F.pin.tipRadius * 2),
-        taperedHalfLength_in: inch(F.pin.coneLength),
-        shape: 'hexagonal; one half tapers to a tip that nests into a Goal or Cup',
-        source: 'element dimensions (manual appendix, via community CAD)',
+        tipLength_in: inch(F.pin.tipLength),
+        taperEndFromTip_in: inch(F.pin.taperEnd),
+        shape: 'symmetric, hexagonal: each half is a tip, a taper and a center collar; either end nests into a Goal or Cup',
+        source: 'game manual element drawings',
       },
       cup: {
-        height_in: inch(F.cupHeight),
-        shape: 'hourglass; lower half clear, upper half opaque',
-        source: 'game manual (SC3); element dimensions via community CAD',
+        height_in: inch(F.cup.height),
+        topAcross_in: inch(F.cup.topRadius * 2),
+        waistAcross_in: inch(F.cup.waistRadius * 2),
+        shape: 'straight-tapered hourglass, waist at mid-height; lower half clear, upper half opaque',
+        source: 'game manual element drawings; SC3',
+      },
+      goal: {
+        footprint: `chamfered square, ${inch(F.goal.flats)} in across the flats, ${inch(F.goal.corner)} in center to corner`,
+        module: `every Goal is topped by the same ${inch(F.goal.module)} in tapered module: ${inch(F.goal.flange)} in flange, tapering to ${inch(F.goal.topFlats)} in across, ${inch(F.goal.hole)} in hole, code marker 1.49 in up`,
+        bases: { tall_in: inch(F.goal.baseHeight.tall), short_in: inch(F.goal.baseHeight.short), alliance_in: 0 },
+        colors: 'neutral Goals black with yellow line art; Alliance Goals red or blue',
+        source: 'game manual element drawings',
+      },
+      stacking: {
+        pinInGoal: `the Pin’s ${inch(F.pin.tipLength)} in tip drops into the Goal hole`,
+        cupOnPin: 'a Cup’s clear lower half slides over the Pin and rests on its center collar',
+        pinInCup: 'the next Pin’s tip sits at the Cup’s waist, inside its opaque upper half (that half is hidden, SC3)',
+        source: 'derived from the manual element drawings',
       },
     },
     matchLoads: {
@@ -186,7 +205,7 @@ export function layoutSvg(): string {
 /** Side views of the game elements with dimensions. */
 export function elementsSvg(): string {
   const S = 40; // px per inch
-  let s = svgOpen(1320, 520, 'Override game elements (VEXsim)');
+  let s = svgOpen(1400, 520, 'Override game elements (VEXsim)');
   s += `<g font-size="15" fill="#222">`;
   const base = 430;
   const dim = (x1: number, y1: number, x2: number, y2: number, label: string, side = 1) => {
@@ -195,45 +214,53 @@ export function elementsSvg(): string {
   };
   s += `<defs><marker id="a" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#666"/></marker></defs>`;
 
-  // Pin: tapered hex half below, flat hex half above.
+  // Pin: symmetric. Lower half red, upper half blue (each half: tip, taper, collar).
   const pl = F.pin.length / IN;
-  const pc = F.pin.coneLength / IN;
   const pw = (F.pin.radius * 2) / IN;
   const pt = (F.pin.tipRadius * 2) / IN;
+  const ptl = F.pin.tipLength / IN;
+  const pte = F.pin.taperEnd / IN;
   const px = 120;
-  s += `<polygon points="${px - (pt / 2) * S},${base} ${px + (pt / 2) * S},${base} ${px + (pw / 2) * S},${base - pc * S} ${px - (pw / 2) * S},${base - pc * S}" fill="${COLOR.red}" stroke="#111"/>`;
-  s += `<rect x="${px - (pw / 2) * S}" y="${base - pl * S}" width="${pw * S}" height="${(pl - pc) * S}" fill="${COLOR.yellow}" stroke="#111"/>`;
+  const halfPts = (dir: number) => {
+    const y = (v: number) => base - (dir > 0 ? v : pl - v) * S;
+    return [[-pt / 2, 0], [-pt / 2, ptl], [-pw / 2 * 0.95, pte], [-pw / 2, pte + 0.04], [-pw / 2, pl / 2], [pw / 2, pl / 2], [pw / 2, pte + 0.04], [pw / 2 * 0.95, pte], [pt / 2, ptl], [pt / 2, 0]]
+      .map(([x, v]) => `${px + x * S},${y(v)}`).join(' ');
+  };
+  s += `<polygon points="${halfPts(1)}" fill="${COLOR.red}" stroke="#111"/><polygon points="${halfPts(-1)}" fill="${COLOR.blue}" stroke="#111"/>`;
   dim(px + (pw / 2) * S + 20, base, px + (pw / 2) * S + 20, base - pl * S, `${r1(pl)}″`);
   dim(px - (pw / 2) * S, base + 22, px + (pw / 2) * S, base + 22, `${r1(pw)}″`, -1);
   s += `<text x="${px}" y="${base - pl * S - 18}" text-anchor="middle" font-weight="bold">Pin</text>`;
-  s += `<text x="${px}" y="${base + 52}" text-anchor="middle" font-size="12">tapered half nests down</text>`;
+  s += `<text x="${px}" y="${base + 52}" text-anchor="middle" font-size="12">symmetric · ${r1(pt)}″ tips · either end nests</text>`;
 
-  // Cup: hourglass, clear lower half, opaque upper half.
-  const ch = F.cupHeight / IN;
-  const cx = 380;
-  const prof: [number, number][] = [[1.57, 0], [1.46, 0.71], [1.36, 1.38], [1.24, 2.36], [1.22, 3.24], [1.26, 3.94], [1.36, 4.92], [1.5, 5.9], [1.58, 6.48]];
-  const left = prof.map(([r, y]) => `${cx - r * S},${base - y * S}`);
-  const right = prof.map(([r, y]) => `${cx + r * S},${base - y * S}`).reverse();
-  const mid = 4;
-  s += `<polygon points="${[...left.slice(0, mid + 1), ...right.slice(right.length - mid - 1)].join(' ')}" fill="#dceaff" fill-opacity="0.6" stroke="#55606c"/>`;
-  s += `<polygon points="${[...left.slice(mid), ...right.slice(0, right.length - mid)].join(' ')}" fill="#b8b8bd" stroke="#55606c"/>`;
-  dim(cx + 1.8 * S, base, cx + 1.8 * S, base - ch * S, `${r1(ch)}″`);
+  // Cup: straight tapers; clear lower half, opaque upper half; waist at mid-height.
+  const ch = F.cup.height / IN;
+  const ct = (F.cup.topRadius * 2) / IN;
+  const cw = (F.cup.waistRadius * 2) / IN;
+  const cx = 400;
+  s += `<polygon points="${cx - (ct / 2) * 0.98 * S},${base} ${cx + (ct / 2) * 0.98 * S},${base} ${cx + (cw / 2) * S},${base - (ch / 2) * S} ${cx - (cw / 2) * S},${base - (ch / 2) * S}" fill="#dceaff" fill-opacity="0.6" stroke="#55606c"/>`;
+  s += `<polygon points="${cx - (cw / 2) * S},${base - (ch / 2) * S} ${cx + (cw / 2) * S},${base - (ch / 2) * S} ${cx + (ct / 2) * S},${base - ch * S} ${cx - (ct / 2) * S},${base - ch * S}" fill="#2f3237" stroke="#55606c"/>`;
+  dim(cx + (ct / 2) * S + 16, base, cx + (ct / 2) * S + 16, base - ch * S, `${r1(ch)}″`);
   s += `<text x="${cx}" y="${base - ch * S - 18}" text-anchor="middle" font-weight="bold">Cup</text>`;
-  s += `<text x="${cx}" y="${base + 30}" text-anchor="middle" font-size="12">clear lower half · opaque upper half</text>`;
+  s += `<text x="${cx}" y="${base + 30}" text-anchor="middle" font-size="12">${r1(ct)}″ top · ${r1(cw)}″ waist · clear lower / opaque upper</text>`;
 
-  // Goals: three heights.
-  const kinds: ['tall' | 'short' | 'alliance', string, string][] = [['tall', 'Tall Goal', '#dcdcdc'], ['short', 'Short Goal', '#dcdcdc'], ['alliance', 'Alliance Goal', COLOR.red]];
+  // Goals: base (neutral) + the shared tapered module.
+  const kinds: ['tall' | 'short' | 'alliance', string, string][] = [['tall', 'Tall Goal', '#18191b'], ['short', 'Short Goal', '#18191b'], ['alliance', 'Alliance Goal', COLOR.red]];
   kinds.forEach(([k, label, fill], i) => {
-    const gx = 660 + i * 230;
+    const gx = 690 + i * 250;
     const h = F.goalHeight[k] / IN;
-    const rb = F.goalRadiusBottom / IN;
-    const rt = F.goalRadiusTop / IN;
-    s += `<polygon points="${gx - rb * S * 0.75},${base} ${gx + rb * S * 0.75},${base} ${gx + rt * S * 0.75},${base - h * S} ${gx - rt * S * 0.75},${base - h * S}" fill="${fill}" stroke="#222"/>`;
-    dim(gx + rb * S * 0.75 + 12, base, gx + rb * S * 0.75 + 12, base - h * S, `${r1(h)}″`);
+    const bh = F.goal.baseHeight[k] / IN;
+    const fw = F.goal.flats / IN / 2;
+    const tw = F.goal.topFlats / IN / 2;
+    const fl = F.goal.flange / IN;
+    if (bh > 0) s += `<rect x="${gx - fw * S}" y="${base - bh * S}" width="${fw * 2 * S}" height="${bh * S}" fill="${fill}" stroke="#222"/><circle cx="${gx}" cy="${base - bh * 0.45 * S}" r="${Math.min(bh * 0.3, 1.2) * S}" fill="none" stroke="#e8c21b" stroke-width="3"/>`;
+    s += `<rect x="${gx - fw * S}" y="${base - (bh + fl) * S}" width="${fw * 2 * S}" height="${fl * S}" fill="${fill}" stroke="#222"/>`;
+    s += `<polygon points="${gx - fw * 0.873 * S},${base - (bh + fl) * S} ${gx + fw * 0.873 * S},${base - (bh + fl) * S} ${gx + tw * S},${base - h * S} ${gx - tw * S},${base - h * S}" fill="${fill}" stroke="#222"/>`;
+    s += `<rect x="${gx - 0.58 * S}" y="${base - (bh + 1.49 + 0.58) * S}" width="${1.16 * S}" height="${1.16 * S}" fill="#fff" stroke="#000" stroke-width="6"/>`;
+    dim(gx + fw * S + 12, base, gx + fw * S + 12, base - h * S, `${r1(h)}″`);
     s += `<text x="${gx}" y="${base - h * S - 18}" text-anchor="middle" font-weight="bold">${label}</text>`;
   });
-  s += `<text x="700" y="${base + 30}" font-size="12">octagonal, ${r1((F.goalRadiusBottom * 2) / IN)}″ across at the base, tapering to ${r1((F.goalRadiusTop * 2) / IN)}″</text>`;
-  s += `<line x1="40" y1="${base}" x2="1280" y2="${base}" stroke="#999"/>`;
+  s += `<text x="700" y="${base + 30}" font-size="12">chamfered square, ${r1(F.goal.flats / IN)}″ across the flats; all share the ${r1(F.goal.module / IN)}″ tapered top module</text>`;
+  s += `<line x1="40" y1="${base}" x2="1360" y2="${base}" stroke="#999"/>`;
   s += `<text x="40" y="505" font-size="12" fill="#666">Side views, drawn to scale (${S} px = 1″). Original drawing by VEXsim from its field data; not an official VEX drawing.</text>`;
   return s + '</g></svg>\n';
 }
@@ -271,10 +298,10 @@ export function fieldSpecMarkdown(): string {
   md += `![Starting layout](diagrams/starting-layout.svg)\n\n`;
   md += `## Coordinates\nOrigin at the field center. **+x** points toward the blue Alliance Station (East wall); red stands on the West wall. **+z** points toward the South wall. Diagrams put North at the top. Values are in inches, with meters in \`field-spec.json\`.\n\n`;
   md += `## Field\n- 12 ft × 12 ft, made of 36 foam tiles (6 × 6, 24″ each)\n- Tape: two corner-to-corner diagonals make the four Quadrants (N, E, S, W); the Midfield is a 48″ diamond with a center cross\n- Counts: 63 Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue), 56 Cups, 9 Goals, 4 Toggles, 4 Loaders *(game manual)*\n\n`;
-  md += `## Goals\n` + rows(['Goal', 'Kind', 'Quadrant', 'x″', 'z″', 'Height″'], spec.goals.map((g) => [g.id, g.kind + (g.alliance ? ` (${g.alliance})` : ''), g.quadrant ?? 'Midfield', g.x_in, g.z_in, g.height_in])) + `\nOctagonal and tapered, ${spec.goals[0].baseAcross_in}″ across at the base and ${spec.goals[0].topAcross_in}″ at the top.\n\n`;
+  md += `## Goals\n` + rows(['Goal', 'Kind', 'Quadrant', 'x″', 'z″', 'Height″'], spec.goals.map((g) => [g.id, g.kind + (g.alliance ? ` (${g.alliance})` : ''), g.quadrant ?? 'Midfield', g.x_in, g.z_in, g.height_in])) + `\nChamfered-square footprint, ${spec.goals[0].baseAcrossFlats_in}″ across the flats, tapering to ${spec.goals[0].topAcrossFlats_in}″ at the top.\n\n`;
   md += `## Toggles\n` + rows(['Quadrant', 'x″', 'z″', 'Length″'], spec.toggles.map((t) => [t.quadrant, t.x_in, t.z_in, t.length_in])) + `\nThree faces (yellow neutral, red, blue). A Toggle counts only when set to a color and not touched by any Robot. ![Toggle](diagrams/toggle.svg)\n\n`;
   md += `## Loaders\n` + rows(['Alliance', 'x″', 'z″'], spec.loaders.map((l) => [l.alliance, l.x_in, l.z_in])) + '\n';
-  md += `## Game elements\n![Elements](diagrams/elements.svg)\n\n- **Pin:** ${spec.elements.pin.length_in}″ long and hexagonal (${spec.elements.pin.acrossCorners_in}″ across corners). One half tapers to ${spec.elements.pin.tipAcross_in}″ and nests into a Goal or Cup. Each half scores separately.\n- **Cup:** ${spec.elements.cup.height_in}″ tall hourglass with a clear lower half and an opaque upper half. A Pin half inside the opaque half doesn't score.\n\n`;
+  md += `## Game elements\n![Elements](diagrams/elements.svg)\n\n- **Pin:** ${spec.elements.pin.length_in}″ long, hexagonal and symmetric (${spec.elements.pin.collarAcrossCorners_in}″ across the collar's corners, ${spec.elements.pin.acrossFlats_in}″ across the flats). Each end is a ${spec.elements.pin.tipAcross_in}″ tip, so either end nests into a Goal or Cup. Each half scores separately.\n- **Cup:** ${spec.elements.cup.height_in}″ tall, ${spec.elements.cup.topAcross_in}″ across the top, ${spec.elements.cup.waistAcross_in}″ at the waist; clear lower half, opaque upper half. A Pin half inside the opaque half doesn't score.\n- **Goals:** ${spec.elements.goal.footprint}; ${spec.elements.goal.module}. ${spec.elements.goal.colors}.\n- **Stacking:** ${spec.elements.stacking.pinInGoal}; ${spec.elements.stacking.cupOnPin}; ${spec.elements.stacking.pinInCup}.\n\n`;
   md += `## Match Loads and Preloads\n- **Match:** ${spec.matchLoads.match.perAlliance} per alliance *(${spec.matchLoads.match.source})*\n- **Skills:** ${spec.matchLoads.skills.redYellowPins} red/yellow Pins, ${spec.matchLoads.skills.blueYellowPins} blue/yellow Pins and ${spec.matchLoads.skills.cups} Cups ${spec.matchLoads.skills.note} *(${spec.matchLoads.skills.source})*\n- **Preload:** ${spec.preloads.perRobot} per robot\n\n`;
   const off = spec.startingLayout.pins.filter((p) => p.source === 'official').length + spec.startingLayout.cups.filter((c) => c.source === 'official').length;
   md += `## Starting layout\n${off} elements come from the official VEXcode VR layout. The rest (${spec.startingLayout.pins.length} Pins and ${spec.startingLayout.cups.length} Cups on the field in total, plus 1 yellow Pin on the Tall Goal) are **filled in symmetrically by VEXsim (assumption)**. Replace them in \`startingLayout()\` in \`src/games/override/game.ts\` once checked against the manual, then run \`npm run reference\`.\n\n`;

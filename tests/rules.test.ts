@@ -9,7 +9,7 @@ const state = (goals: GoalState[], o: Partial<OverrideState> = {}): OverrideStat
   autoBonus: null,
   ...o,
 });
-const pin = (cone: PinItem['cone'], prism: PinItem['prism']): PinItem => ({ type: 'pin', cone, prism });
+const pin = (down: PinItem['down'], up: PinItem['up']): PinItem => ({ type: 'pin', down, up });
 
 describe('Override scoring (per Pin half)', () => {
   it('both halves of a Pin on a Goal score', () => {

@@ -89,11 +89,11 @@ Placing takes real time: the lift travels to the top of the stack, and the wrist
 | Item | Value used |
 | --- | --- |
 | Field | 12′ × 12′ foam tiles; corner-to-corner tape makes four Quadrants; 48″ Midfield diamond |
-| Goals | 9 **octagonal** tapered Goals: Tall 8.77″ (center), four neutral Short 5.77″ at (±24″, ±47″)/(±47″, ±24″), four Alliance 3.25″ (2 red on the red side, 2 blue) |
+| Goals | 9 Goals on a chamfered-square footprint (5.61″ across the flats), all topped by the same 3.25″ tapered module with a 2.37″ hole and code markers. Neutral Goals are black with yellow line art on a base: Tall 8.77″ (center), four Short 5.77″ at (±24″, ±47″)/(±47″, ±24″). Four Alliance Goals are the bare 3.25″ module in red or blue |
 | Toggles | 656 mm three-face (yellow/red/blue) prisms at the center of each wall. They count only when **no robot is touching them** |
 | Loaders | 4, in the corners beside the Alliance Stations. Match Loads: 10 Cups + 10 alliance Pins + 1 yellow Pin per alliance |
-| Pins | 63 two-color hex Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue), tapered end nests down. 1 alliance Pin preload per robot |
-| Cups | 56 hourglass Cups, **clear lower half and opaque upper half**. Flip them (R / A) to choose which Pin half they hide |
+| Pins | 63 two-color Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue): 6.5″ long, hexagonal and **symmetric**, with a 2.35″ tip at each end and a 3.16″ collar, so either end nests. R / A flips which color half goes down. 1 alliance Pin preload per robot |
+| Cups | 56 Cups, 6.48″ tall, 3.16″ across the top with a 2.32″ waist, **clear lower half and opaque upper half**. A Cup rests on a Pin's collar, and the next Pin's tip sits at its waist. R / A flips a Cup to choose which Pin half it hides |
 | Scoring | **Each visible Pin half**: 5 for a red/blue half, 10 for a yellow half owned via the quadrant Toggle. A half inside a Cup’s opaque half doesn’t count. Robot in Midfield 8 · Autonomous Bonus 12 (6 each on a tie), decided on Pin points |
 | Timing | 0:15 auto + 1:45 driver (last 0:10 endgame). Driver Skills 0:60 |
 

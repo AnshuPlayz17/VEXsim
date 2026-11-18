@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { RAPIER, PIECE_GROUPS } from '../../core/physics';
+import { RAPIER, PIECE_GROUPS, FIELD_GROUPS } from '../../core/physics';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { FieldBuilder, canvasTexture } from '../../core/builder';
 import { IN, FT } from '../../core/units';
 
@@ -40,9 +41,19 @@ const HALF = 6 * FT; // 1.8288 m
 const WALL_H = 0.3;
 
 type GoalKind = 'alliance' | 'short' | 'tall';
-const GOAL_H: Record<GoalKind, number> = { tall: 0.2227, short: 0.1465, alliance: 0.0825 };
-const GOAL_R_BOTTOM = 0.077;
-const GOAL_R_TOP = 0.048;
+// Goals (game manual drawings): every Goal is topped by the same 3.25" tapered module
+// (0.39" flange, 5.61" across the flats tapering to 3.49", 2.37" hole); the neutral
+// Short and Tall Goals stand it on a black base 2.52" / 5.52" tall.
+const GOAL_H: Record<GoalKind, number> = { tall: 8.77 * IN, short: 5.77 * IN, alliance: 3.25 * IN };
+const GOAL_BASE_H: Record<GoalKind, number> = { tall: 5.52 * IN, short: 2.52 * IN, alliance: 0 };
+const GOAL_FLATS = 5.61 * IN; // across the flats of the chamfered-square footprint
+const GOAL_CORNER = 3.22 * IN; // center to a chamfer corner
+const GOAL_TOP_FLATS = 3.49 * IN;
+const GOAL_FLANGE_H = 0.39 * IN;
+const GOAL_MODULE_H = 3.25 * IN;
+const GOAL_HOLE = 2.37 * IN;
+const GOAL_R_BOTTOM = GOAL_CORNER;
+const GOAL_R_TOP = (GOAL_TOP_FLATS / GOAL_FLATS) * GOAL_CORNER;
 
 const GOALS: { id: string; kind: GoalKind; alliance?: Alliance; quadrant: Quadrant | null; x: number; z: number }[] = [
   { id: 'center', kind: 'tall', quadrant: null, x: 0, z: 0 },
@@ -70,11 +81,23 @@ const LOADERS: { alliance: Alliance; x: number; z: number }[] = [
 ];
 
 // ----------------------------------------------------------- game pieces
-const PIN_LEN = 0.165;
-const PIN_R = 0.0464; // hexagon circumradius
-const PIN_CONE = 0.0907;
-const PIN_TIP_R = 0.021;
-const CUP_H = 0.1645;
+// Pin (manual drawing): 6.50" long and symmetric. Each half is a 0.64" tip 2.35"
+// across, a taper out to 2.93" from its end, then a center collar 3.16" across.
+const PIN_LEN = 6.5 * IN;
+const PIN_R = 3.16 * IN / 2; // collar, across corners
+const PIN_TIP_R = 2.35 * IN / 2;
+const PIN_TIP_LEN = 0.64 * IN;
+const PIN_TAPER_END = 2.93 * IN;
+// Cup (manual drawing): 6.48" tall, 3.16" across the top, 2.32" waist at mid-height;
+// clear lower half, opaque upper half.
+const CUP_H = 6.48 * IN;
+const CUP_TOP_R = 3.16 * IN / 2;
+const CUP_WAIST_R = 2.32 * IN / 2;
+// How the stack fits together: a Pin's tip drops into the Goal hole; a Cup's clear half
+// slides over a Pin and rests on its collar; the next Pin's tip sits at the Cup's waist.
+const NEST_PIN_IN_GOAL = PIN_TIP_LEN;
+const CUP_ON_PIN = PIN_LEN / 2 + 0.32 * IN; // Cup base above the Pin's base (top of collar)
+const PIN_IN_CUP = CUP_H / 2; // next Pin's base above the Cup's base (the waist)
 const COLORS: Record<PinColor, number> = { red: 0xbf2a1f, blue: 0x1f3fc7, yellow: 0xebbd19 };
 const CSS: Record<PinColor, string> = { red: '#e04040', blue: '#3b6ff0', yellow: '#f2c518' };
 
@@ -145,9 +168,8 @@ const PRESETS: RobotConfig[] = [
 interface Piece {
   id: number;
   kind: 'pin' | 'cup';
-  /** Pin halves: tapered end, flat (prism) end. */
-  cone: PinColor;
-  prism: PinColor;
+  /** Pin half colors [A, B]; mesh half A is the lower one when unrotated. */
+  colors: [PinColor, PinColor];
   body: RAPIER.RigidBody;
   mesh: THREE.Group;
   state: 'loose' | 'held' | 'placed';
@@ -173,17 +195,80 @@ interface ToggleViz {
 
 type PlaceJob = { goal: Goal; piece: Piece; t: number; duration: number; height: number };
 
-/** Hexagonal pin points for the convex collider (tip down, local origin at center). */
+/** Chamfered-square Goal footprint (manual: 5.61" across the flats, 3.22" to a corner), scaled. */
+function chamferedSquare(scale: number): [number, number][] {
+  const f = (GOAL_FLATS / 2) * scale;
+  const c = Math.sqrt(GOAL_CORNER * GOAL_CORNER - (GOAL_FLATS / 2) ** 2) * scale;
+  return [[f, c], [c, f], [-c, f], [-f, c], [-f, -c], [-c, -f], [c, -f], [f, -c]];
+}
+
+let lineArtTex: THREE.Texture | null = null;
+/** Yellow line art on the black neutral Goal bases. */
+function goalLineArtTexture(): THREE.Texture {
+  if (lineArtTex) return lineArtTex;
+  lineArtTex = canvasTexture(256, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = '#e8c21b';
+    g.lineWidth = 5;
+    const hex = (cx: number, cy: number, r: number) => {
+      g.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+        g[i ? 'lineTo' : 'moveTo'](cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      }
+      g.closePath();
+      g.stroke();
+    };
+    g.beginPath();
+    g.arc(w / 2, h * 0.62, w * 0.3, 0, Math.PI * 2);
+    g.stroke();
+    hex(w / 2, h * 0.62, w * 0.16);
+    for (const sx of [0.12, 0.88]) {
+      g.beginPath();
+      g.arc(w * sx, h * 0.28, w * 0.16, 0, Math.PI * 2);
+      g.stroke();
+      hex(w * sx, h * 0.28, w * 0.08);
+    }
+  });
+  return lineArtTex;
+}
+
+let markerTex: THREE.Texture | null = null;
+/** Square field code marker on each Goal face (a black-and-white block code). */
+function goalMarkerTexture(): THREE.Texture {
+  if (markerTex) return markerTex;
+  markerTex = canvasTexture(64, 64, (g) => {
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, 64, 64);
+    g.fillStyle = '#000000';
+    g.fillRect(8, 8, 48, 48);
+    g.fillStyle = '#ffffff';
+    const cells = [[1, 0], [3, 0], [0, 2], [4, 2], [2, 4], [1, 2], [2, 1], [3, 3], [2, 2]];
+    for (const [cx, cy] of cells) g.fillRect(12 + cx * 8, 12 + cy * 8, 8, 8);
+  });
+  markerTex.magFilter = THREE.NearestFilter;
+  return markerTex;
+}
+
+/** Lower half of the Pin's side profile (r, y), local origin at the Pin's center. */
+function pinHalfProfile(): [number, number][] {
+  const b = -PIN_LEN / 2;
+  const collarIn = PIN_R * 0.95;
+  return [
+    [0, b], [PIN_TIP_R, b], [PIN_TIP_R, b + PIN_TIP_LEN], [collarIn, b + PIN_TAPER_END],
+    [PIN_R, b + PIN_TAPER_END + 0.04 * IN], [PIN_R, 0], [0, 0],
+  ];
+}
+
+/** Hexagonal Pin points for the convex collider. */
 function pinHullPoints(): Float32Array {
   const pts: number[] = [];
-  const bottom = -PIN_LEN / 2;
-  const mid = bottom + PIN_CONE;
-  const top = PIN_LEN / 2;
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    pts.push(Math.cos(a) * PIN_TIP_R, bottom, Math.sin(a) * PIN_TIP_R);
-    pts.push(Math.cos(a) * PIN_R, mid, Math.sin(a) * PIN_R);
-    pts.push(Math.cos(a) * PIN_R, top, Math.sin(a) * PIN_R);
+  for (const [r, y] of pinHalfProfile()) {
+    if (r === 0) continue;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      pts.push(Math.cos(a) * r, y, Math.sin(a) * r, Math.cos(a) * r, -y, Math.sin(a) * r);
+    }
   }
   return new Float32Array(pts);
 }
@@ -195,6 +280,8 @@ class OverrideRuntime implements GameRuntime {
   private toggles: ToggleViz[] = [];
   private held: Piece[] = [];
   private cupOpaqueUp = true;
+  /** Which half of the next Pin goes down: false = its first color. */
+  private pinFlip = false;
   private intakeCooldown = 0;
   private dropCooldown = 0;
   private prevScore = false;
@@ -205,33 +292,33 @@ class OverrideRuntime implements GameRuntime {
   private placedByMe = 0;
   private midfieldGlow!: THREE.Mesh;
   private readonly me: Alliance;
-  private geo: { cone: THREE.BufferGeometry; prism: THREE.BufferGeometry; cupLow: THREE.BufferGeometry; cupHigh: THREE.BufferGeometry };
+  private geo: { pinLow: THREE.BufferGeometry; pinHigh: THREE.BufferGeometry; cupLow: THREE.BufferGeometry; cupHigh: THREE.BufferGeometry };
   private mats: { pin: Record<PinColor, THREE.Material>; cupOpaque: THREE.Material; cupClear: THREE.Material };
   private pinHull = pinHullPoints();
 
   constructor(private ctx: GameContext) {
     this.me = ctx.robot.alliance;
     this.builder = new FieldBuilder(ctx.world, ctx.scene);
-    // Shared geometry: hex cone + hex prism Pins, hourglass Cups.
-    const cone = new THREE.CylinderGeometry(PIN_R, PIN_TIP_R, PIN_CONE, 6);
-    cone.translate(0, -PIN_LEN / 2 + PIN_CONE / 2, 0);
-    const prism = new THREE.CylinderGeometry(PIN_R, PIN_R, PIN_LEN - PIN_CONE, 6);
-    prism.translate(0, -PIN_LEN / 2 + PIN_CONE + (PIN_LEN - PIN_CONE) / 2, 0);
-    const profile = [
-      [0.0399, 0], [0.037, 0.018], [0.0345, 0.035], [0.0315, 0.06], [0.031, 0.0822],
-      [0.032, 0.1], [0.0345, 0.125], [0.038, 0.15], [0.0401, 0.1645],
-    ].map(([r, y]) => new THREE.Vector2(r, y - CUP_H / 2));
-    const half = Math.ceil(profile.length / 2);
-    const cupLow = new THREE.LatheGeometry(profile.slice(0, half), 28);
-    const cupHigh = new THREE.LatheGeometry(profile.slice(half - 1), 28);
-    this.geo = { cone, prism, cupLow, cupHigh };
+    // Shared geometry: symmetric hexagonal Pins (two colored halves), straight-tapered Cups.
+    const half = pinHalfProfile().map(([r, y]) => new THREE.Vector2(r, y));
+    const pinLow = new THREE.LatheGeometry(half, 6);
+    const pinHigh = pinLow.clone().scale(1, -1, 1);
+    if (pinHigh.index) pinHigh.setIndex(Array.from(pinHigh.index.array).reverse());
+    pinHigh.computeVertexNormals();
+    pinLow.computeVertexNormals();
+    const c = CUP_H;
+    const cupProfile = (pts: [number, number][]) => pts.map(([r, y]) => new THREE.Vector2(r, y - c / 2));
+    // Clear lower half: base lip, flaring in to the waist. Opaque upper half: waist out to the top lip.
+    const cupLow = new THREE.LatheGeometry(cupProfile([[CUP_TOP_R * 0.98, 0], [CUP_TOP_R * 0.98, 0.006], [CUP_TOP_R * 0.93, 0.008], [CUP_WAIST_R, c / 2]]), 28);
+    const cupHigh = new THREE.LatheGeometry(cupProfile([[CUP_WAIST_R, c / 2], [CUP_TOP_R * 0.95, c - 0.008], [CUP_TOP_R, c - 0.005], [CUP_TOP_R, c]]), 28);
+    this.geo = { pinLow, pinHigh, cupLow, cupHigh };
     this.mats = {
       pin: {
         red: new THREE.MeshStandardMaterial({ color: COLORS.red, roughness: 0.45 }),
         blue: new THREE.MeshStandardMaterial({ color: COLORS.blue, roughness: 0.45 }),
         yellow: new THREE.MeshStandardMaterial({ color: COLORS.yellow, roughness: 0.45 }),
       },
-      cupOpaque: new THREE.MeshStandardMaterial({ color: 0xb8b8bd, roughness: 0.4, side: THREE.DoubleSide }),
+      cupOpaque: new THREE.MeshStandardMaterial({ color: 0x2f3237, roughness: 0.45, side: THREE.DoubleSide }),
       cupClear: new THREE.MeshStandardMaterial({ color: 0xdcebff, roughness: 0.08, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false }),
     };
     const loads = (a: Alliance): ('cup' | 'pin' | 'yy')[] => {
@@ -343,27 +430,59 @@ class OverrideRuntime implements GameRuntime {
       b.box({ center: [cx, WALL_H - 0.01, cz], size: [w, 0.02, d], material: steel, collider: false });
     }
 
-    // Goals: octagonal tapered towers with a receptacle on top.
+    // Goals, from the manual drawings: a chamfered-square footprint; neutral Goals stand a
+    // black base with yellow line art under the same 3.25" tapered module the Alliance
+    // Goals use, which carries a 2.37" hole and a field code marker on each face.
+    const lineArt = goalLineArtTexture();
+    const marker = goalMarkerTexture();
     for (const def of GOALS) {
-      const h = GOAL_H[def.kind];
-      const color = def.kind === 'alliance' ? COLORS[def.alliance!] : 0xdcdcdc;
-      const geo = new THREE.CylinderGeometry(GOAL_R_TOP, GOAL_R_BOTTOM, h, 8);
-      geo.rotateY(Math.PI / 8);
-      const mesh = new THREE.Mesh(geo, b.mat(color, { rough: 0.5 }));
-      mesh.position.set(def.x, h / 2, def.z);
-      mesh.castShadow = mesh.receiveShadow = true;
-      b.group.add(mesh);
-      const rec = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.008, 20), b.mat(0x141414));
-      rec.position.set(def.x, h - 0.003, def.z);
-      b.group.add(rec);
-      const pts: number[] = [];
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
-        pts.push(def.x + Math.cos(a) * GOAL_R_BOTTOM, 0, def.z + Math.sin(a) * GOAL_R_BOTTOM);
-        pts.push(def.x + Math.cos(a) * GOAL_R_TOP, h, def.z + Math.sin(a) * GOAL_R_TOP);
+      const baseH = GOAL_BASE_H[def.kind];
+      const color = def.kind === 'alliance' ? COLORS[def.alliance!] : 0x18191b;
+      const m = b.mat(color, { rough: 0.55 });
+      const ring = (scale: number, y: number) => chamferedSquare(scale).map(([x, z]) => new THREE.Vector3(def.x + x, y, def.z + z));
+      const solid = (pts: THREE.Vector3[]) => {
+        const mesh = new THREE.Mesh(new ConvexGeometry(pts), m);
+        mesh.castShadow = mesh.receiveShadow = true;
+        b.group.add(mesh);
+      };
+      const taperBottom = 0.873; // taper body starts inside the flange
+      const topScale = GOAL_TOP_FLATS / GOAL_FLATS;
+      if (baseH > 0) {
+        solid([...ring(1, 0), ...ring(1, baseH)]);
+        // Yellow line art on the four flat faces.
+        for (let k = 0; k < 4; k++) {
+          const ang = (k * Math.PI) / 2;
+          const plane = new THREE.Mesh(
+            new THREE.PlaneGeometry(GOAL_CORNER * 0.95, baseH * 0.92),
+            new THREE.MeshStandardMaterial({ map: lineArt, transparent: true, roughness: 0.6, depthWrite: false }),
+          );
+          plane.position.set(def.x + Math.cos(ang) * (GOAL_FLATS / 2 + 0.001), baseH / 2, def.z - Math.sin(ang) * (GOAL_FLATS / 2 + 0.001));
+          plane.rotation.y = ang + Math.PI / 2;
+          b.group.add(plane);
+        }
       }
+      // Tapered module: flange, then the taper to the top.
+      solid([...ring(1, baseH), ...ring(1, baseH + GOAL_FLANGE_H)]);
+      solid([...ring(taperBottom, baseH + GOAL_FLANGE_H), ...ring(topScale, baseH + GOAL_MODULE_H)]);
+      // Field code markers, 1.49" up the module, tilted with the taper.
+      const yM = baseH + 1.49 * IN;
+      const tilt = Math.atan2((taperBottom - topScale) * (GOAL_FLATS / 2), GOAL_MODULE_H - GOAL_FLANGE_H);
+      const flatAt = (GOAL_FLATS / 2) * (taperBottom + (topScale - taperBottom) * ((yM - baseH - GOAL_FLANGE_H) / (GOAL_MODULE_H - GOAL_FLANGE_H)));
+      for (let k = 0; k < 4; k++) {
+        const ang = (k * Math.PI) / 2;
+        const tag = new THREE.Mesh(new THREE.PlaneGeometry(1.15 * IN, 1.15 * IN), new THREE.MeshStandardMaterial({ map: marker, roughness: 0.7 }));
+        tag.position.set(def.x + Math.cos(ang) * (flatAt + 0.0015), yM, def.z - Math.sin(ang) * (flatAt + 0.0015));
+        tag.rotation.set(0, ang + Math.PI / 2, 0);
+        tag.rotateX(-tilt);
+        b.group.add(tag);
+      }
+      const hole = new THREE.Mesh(new THREE.CylinderGeometry(GOAL_HOLE / 2, GOAL_HOLE / 2, 0.006, 24), b.mat(0x0b0b0b));
+      hole.position.set(def.x, GOAL_H[def.kind] - 0.002, def.z);
+      b.group.add(hole);
+      const pts: number[] = [];
+      for (const v of [...ring(1, 0), ...ring(topScale, GOAL_H[def.kind])]) pts.push(v.x, v.y, v.z);
       const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(pts));
-      if (desc) this.ctx.world.createCollider(desc.setCollisionGroups((0x0001 << 16) | 0x0006).setFriction(0.5));
+      if (desc) this.ctx.world.createCollider(desc.setCollisionGroups(FIELD_GROUPS).setFriction(0.5));
       this.goals.push({ id: def.id, kind: def.kind, alliance: def.alliance, quadrant: def.quadrant, stack: [], x: def.x, z: def.z, pieces: [] });
     }
     this.midfieldGlow = new THREE.Mesh(
@@ -423,22 +542,21 @@ class OverrideRuntime implements GameRuntime {
   }
 
   // ------------------------------------------------------------- pieces
-  private makePin(x: number, y: number, z: number, colors: [PinColor, PinColor], prismDown = true): Piece {
+  private makePin(x: number, y: number, z: number, colors: [PinColor, PinColor]): Piece {
     const group = new THREE.Group();
-    const cone = new THREE.Mesh(this.geo.cone, this.mats.pin[colors[0]]);
-    const prism = new THREE.Mesh(this.geo.prism, this.mats.pin[colors[1]]);
-    for (const m of [cone, prism]) {
+    const low = new THREE.Mesh(this.geo.pinLow, this.mats.pin[colors[0]]);
+    const high = new THREE.Mesh(this.geo.pinHigh, this.mats.pin[colors[1]]);
+    for (const m of [low, high]) {
       m.castShadow = m.receiveShadow = true;
       group.add(m);
     }
     this.ctx.scene.add(group);
-    const rot = prismDown ? { x: 1, y: 0, z: 0, w: 0 } : { x: 0, y: 0, z: 0, w: 1 };
     const body = this.ctx.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setRotation(rot).setLinearDamping(0.5).setAngularDamping(1.5).setCanSleep(true),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setLinearDamping(0.5).setAngularDamping(1.5).setCanSleep(true),
     );
     const hull = RAPIER.ColliderDesc.convexHull(this.pinHull) ?? RAPIER.ColliderDesc.cylinder(PIN_LEN / 2, 0.04);
     this.ctx.world.createCollider(hull.setMass(0.073).setFriction(0.6).setRestitution(0.05).setCollisionGroups(PIECE_GROUPS), body);
-    const p: Piece = { id: this.pieces.length, kind: 'pin', cone: colors[0], prism: colors[1], body, mesh: group, state: 'loose' };
+    const p: Piece = { id: this.pieces.length, kind: 'pin', colors, body, mesh: group, state: 'loose' };
     this.pieces.push(p);
     return p;
   }
@@ -457,7 +575,7 @@ class OverrideRuntime implements GameRuntime {
       RAPIER.ColliderDesc.cylinder(CUP_H / 2, 0.038).setMass(0.078).setFriction(0.55).setCollisionGroups(PIECE_GROUPS),
       body,
     );
-    const p: Piece = { id: this.pieces.length, kind: 'cup', cone: 'yellow', prism: 'yellow', body, mesh: group, state: 'loose' };
+    const p: Piece = { id: this.pieces.length, kind: 'cup', colors: ['yellow', 'yellow'], body, mesh: group, state: 'loose' };
     this.pieces.push(p);
     return p;
   }
@@ -474,8 +592,8 @@ class OverrideRuntime implements GameRuntime {
     for (const c of layout.cups) this.makeCup(c.x, CUP_H / 2 + 0.002, c.z);
     // The odd yellow/yellow Pin starts Placed on the Tall Goal. ASSUMPTION.
     const center = this.goals.find((g) => g.id === 'center')!;
-    const yy = this.makePin(0, 0.5, 0, ['yellow', 'yellow'], false);
-    this.placeOn(center, yy, { type: 'pin', cone: 'yellow', prism: 'yellow' });
+    const yy = this.makePin(0, 0.5, 0, ['yellow', 'yellow']);
+    this.placeOn(center, yy, { type: 'pin', down: 'yellow', up: 'yellow' });
   }
 
   private hold(p: Piece): void {
@@ -502,27 +620,35 @@ class OverrideRuntime implements GameRuntime {
     this.layoutGoal(g);
   }
 
-  /** Height where the next element's bottom would sit on a goal. */
+  /** Base heights of each stacked element, following how the parts physically nest. */
+  private stackBases(g: Goal, extra?: StackItem): number[] {
+    const items = extra ? [...g.stack, extra] : g.stack;
+    const bases: number[] = [];
+    items.forEach((item, i) => {
+      if (i === 0) bases.push(GOAL_H[g.kind] - NEST_PIN_IN_GOAL);
+      else bases.push(bases[i - 1] + (item.type === 'cup' ? CUP_ON_PIN : PIN_IN_CUP));
+    });
+    return bases;
+  }
+
+  /** Height the next element's bottom would sit at on a goal. */
   private stackTop(g: Goal): number {
-    let cursor = GOAL_H[g.kind];
-    for (const item of g.stack) cursor = item.type === 'pin' ? cursor - 0.03 + PIN_LEN : cursor - 0.07 + CUP_H;
-    return cursor;
+    const next: StackItem = g.stack[g.stack.length - 1]?.type === 'pin' ? { type: 'cup', opaqueUp: true } : { type: 'pin', down: 'red', up: 'red' };
+    const bases = this.stackBases(g, next);
+    return bases[bases.length - 1];
   }
 
   private layoutGoal(g: Goal): void {
-    let cursor = GOAL_H[g.kind];
+    const bases = this.stackBases(g);
     g.stack.forEach((item, i) => {
       const piece = g.pieces[i];
       if (item.type === 'pin') {
-        const base = cursor - 0.03;
-        piece.mesh.position.set(g.x, base + PIN_LEN / 2, g.z);
-        piece.mesh.rotation.set(0, 0, 0); // cone down
-        cursor = base + PIN_LEN;
+        piece.mesh.position.set(g.x, bases[i] + PIN_LEN / 2, g.z);
+        // Mesh half A is the lower half when unrotated.
+        piece.mesh.rotation.set(piece.colors[0] === item.down ? 0 : Math.PI, 0, 0);
       } else {
-        const base = cursor - 0.07;
-        piece.mesh.position.set(g.x, base + CUP_H / 2, g.z);
+        piece.mesh.position.set(g.x, bases[i] + CUP_H / 2, g.z);
         piece.mesh.rotation.set(item.opaqueUp ? 0 : Math.PI, 0, 0);
-        cursor = base + CUP_H;
       }
     });
   }
@@ -635,7 +761,7 @@ class OverrideRuntime implements GameRuntime {
       this.ctx.toast(want === 'cup' ? 'This Pin needs a Cup on it before the next Pin' : 'You need a Pin for this Goal', 'bad');
       return;
     }
-    const item: StackItem = piece.kind === 'cup' ? { type: 'cup', opaqueUp: this.cupOpaqueUp } : { type: 'pin', cone: piece.cone, prism: piece.prism };
+    const item = this.itemFor(piece);
     const res = canPlace(g, item, this.me);
     if (!res.ok) {
       this.ctx.toast(res.reason, 'bad');
@@ -664,19 +790,33 @@ class OverrideRuntime implements GameRuntime {
       return;
     }
     const piece = j.piece;
-    const item: StackItem = piece.kind === 'cup' ? { type: 'cup', opaqueUp: this.cupOpaqueUp } : { type: 'pin', cone: piece.cone, prism: piece.prism };
+    const item = this.itemFor(piece);
     if (!canPlace(g, item, this.me).ok) return;
     this.held = this.held.filter((h) => h !== piece);
     this.placeOn(g, piece, item);
     if (item.type === 'pin') {
       this.placedByMe++;
       const halves = visibleHalves(g).slice(-2).join(' + ');
-      this.ctx.toast(`Pin placed (${halves})`, item.cone === 'yellow' && item.prism === 'yellow' ? 'good' : this.me);
+      this.ctx.toast(`Pin placed: ${item.down} down / ${item.up} up (scoring ${halves})`, item.down === 'yellow' && item.up === 'yellow' ? 'good' : this.me);
       this.ctx.scored(1);
     } else {
       this.ctx.toast(item.opaqueUp ? 'Cup placed: opaque half up' : 'Cup placed upside-down: hides the Pin below’s top half', 'info');
     }
     this.ctx.beep('score');
+  }
+
+  /** The stack item a held piece becomes, using the driver's chosen orientation. */
+  private itemFor(piece: Piece): StackItem {
+    if (piece.kind === 'cup') return { type: 'cup', opaqueUp: this.cupOpaqueUp };
+    const [a, b] = piece.colors;
+    return this.pinFlip ? { type: 'pin', down: b, up: a } : { type: 'pin', down: a, up: b };
+  }
+
+  /** What the next placement would be: decides what the flip button turns over. */
+  private nextKind(): 'pin' | 'cup' {
+    const g = this.goalInFront();
+    if (g) return g.stack[g.stack.length - 1]?.type === 'pin' ? 'cup' : 'pin';
+    return this.held.some((h) => h.kind === 'pin') ? 'pin' : 'cup';
   }
 
   private descore(): void {
@@ -701,9 +841,17 @@ class OverrideRuntime implements GameRuntime {
 
   onAction(a: Action): void {
     if (a === 'flip') {
-      this.cupOpaqueUp = !this.cupOpaqueUp;
+      // Turns over whatever goes on next: a Pin (which color half goes down) or a Cup.
       this.wristTarget += Math.PI;
-      this.ctx.toast(this.cupOpaqueUp ? 'Cups: opaque half UP (hides the next Pin’s lower half)' : 'Cups: opaque half DOWN (hides the lower Pin’s top half)', 'info');
+      if (this.nextKind() === 'pin') {
+        this.pinFlip = !this.pinFlip;
+        const pin = this.held.find((h) => h.kind === 'pin');
+        const it = pin ? (this.itemFor(pin) as { down: PinColor; up: PinColor }) : null;
+        this.ctx.toast(it ? `Pin flipped: ${it.down.toUpperCase()} half down, ${it.up.toUpperCase()} up` : 'Next Pin flipped', 'info');
+      } else {
+        this.cupOpaqueUp = !this.cupOpaqueUp;
+        this.ctx.toast(this.cupOpaqueUp ? 'Cup: opaque half UP (hides the next Pin’s lower half)' : 'Cup: opaque half DOWN (hides the Pin below’s upper half)', 'info');
+      }
     } else if (a === 'descore') {
       if (this.ctx.clock.enabled && !this.job) this.descore();
     } else if (a === 'feed') {
@@ -809,7 +957,10 @@ class OverrideRuntime implements GameRuntime {
       const p = this.held[i];
       if (!p) slots.push('<span class="slot"></span>');
       else if (p.kind === 'cup') slots.push('<span class="slot cup" title="Cup"></span>');
-      else slots.push(`<span class="slot pin" style="--a:${CSS[p.prism]};--b:${CSS[p.cone]}" title="Pin"></span>`);
+      else {
+        const it = this.itemFor(p) as { down: PinColor; up: PinColor };
+        slots.push(`<span class="slot pin" style="--a:${CSS[it.up]};--b:${CSS[it.down]}" title="Pin: ${it.down} half goes down"></span>`);
+      }
     }
     return slots.join('');
   }
@@ -840,7 +991,7 @@ class OverrideRuntime implements GameRuntime {
         carry.getWorldQuaternion(quat);
         p.mesh.position.copy(pos);
         p.mesh.quaternion.copy(quat);
-        if (p.kind === 'pin') p.mesh.rotateX(Math.PI);
+        if (p.kind === 'pin' && (this.itemFor(p) as { down: PinColor }).down !== p.colors[0]) p.mesh.rotateX(Math.PI);
         if (p.kind === 'cup' && !this.cupOpaqueUp) p.mesh.rotateX(Math.PI);
       } else {
         const [x, z] = r.toWorld(r.cfg.length * 0.15, 0);
@@ -987,7 +1138,9 @@ export const OVERRIDE_FIELD = {
   toggles: TOGGLES,
   toggleLength: TOGGLE_LEN,
   loaders: LOADERS,
-  pin: { length: PIN_LEN, radius: PIN_R, coneLength: PIN_CONE, tipRadius: PIN_TIP_R },
+  pin: { length: PIN_LEN, radius: PIN_R, tipRadius: PIN_TIP_R, tipLength: PIN_TIP_LEN, taperEnd: PIN_TAPER_END },
+  goal: { flats: GOAL_FLATS, corner: GOAL_CORNER, topFlats: GOAL_TOP_FLATS, flange: GOAL_FLANGE_H, module: GOAL_MODULE_H, hole: GOAL_HOLE, baseHeight: GOAL_BASE_H },
+  cup: { height: CUP_H, topRadius: CUP_TOP_R, waistRadius: CUP_WAIST_R },
   cupHeight: CUP_H,
   startPoses,
 };
