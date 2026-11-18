@@ -26,11 +26,17 @@ export function fieldSpec() {
       units: 'inches (x_in, z_in) and meters (x_m, z_m)',
     },
     field: {
-      size_in: 144,
-      tiles: '36 foam tiles, 6 × 6, each 24 in square',
-      tape: ['two corner-to-corner diagonals splitting the field into four Quadrants (N, E, S, W)', 'Midfield: a 48 in diamond (|x| + |z| ≤ 24 in) with a center cross'],
-      perimeterHeight_in: { value: inch(F.wallHeight), source: 'assumption (sim value)' },
-      source: 'game manual summary; VEXcode VR Override playground layout',
+      insideWallToWall_in: inch(F.half * 2),
+      tiles: '36 foam tiles, 6 × 6',
+      perimeter: { height_in: inch(F.wallHeight), thickness_in: inch(F.wallThickness), note: 'portable perimeter; the metal perimeter is 140.50 in inside, 11.50 in tall, 1.27 in thick', source: 'Appendix A: perimeter specifications' },
+      goalGrid_in: F.grid.map(inch),
+      tape: {
+        midfield: `diamond, corners ${inch(OVERRIDE.midfieldHalfDiagonal)} in from the center on the axes`,
+        autonomousLine: `corner to corner through the Midfield diamond, from about ${inch(F.autoLineEnd)} in out on each axis; doubled on the North-West to South-East diagonal`,
+        loadZones: `alliance-colored L in each corner on the station walls, about ${inch(F.loadZone.across)} in from the station wall and ${inch(F.loadZone.along)} in along it`,
+        source: 'Appendix A tape and location sheets; field renders (approximate where noted)',
+      },
+      source: 'Appendix A',
     },
     counts: {
       pins: { total: 63, redYellow: OVERRIDE.pinCounts.redYellow, blueYellow: OVERRIDE.pinCounts.blueYellow, yellowYellow: OVERRIDE.pinCounts.yellowYellow, redBlue: OVERRIDE.pinCounts.redBlue },
@@ -52,17 +58,28 @@ export function fieldSpec() {
       topAcrossFlats_in: inch(F.goal.topFlats),
       baseHeight_in: inch(F.goal.baseHeight[g.kind]),
       color: g.kind === 'alliance' ? g.alliance : 'black',
-      source: 'official field layout (VEXcode VR) and element dimensions',
+      source: 'Appendix A: field element locations; element drawings',
     })),
     toggles: F.toggles.map((t) => ({
       quadrant: t.q,
       ...pt(t.x, t.z),
       length_in: inch(F.toggleLength),
-      faces: ['yellow (neutral)', 'red', 'blue'],
+      faceWidth_in: inch(F.toggleFace),
+      axisHeight_in: inch(F.toggleAxisHeight),
+      mounted: 'on top of the perimeter, at the middle of the wall',
+      startingOrientation: `yellow up and into the field, ${t.side} facing out`,
       rule: 'counts for an alliance only when set to its color and no Robot is touching it',
-      source: 'game manual; official field layout',
+      source: 'Appendix A: toggle specifications and starting orientation',
     })),
-    loaders: F.loaders.map((l) => ({ alliance: l.alliance, ...pt(l.x, l.z), source: 'official field layout (one beside each Alliance Station)' })),
+    loaders: F.loaders.map((l) => ({
+      alliance: l.alliance,
+      ...pt(l.x, l.z),
+      chuteHeight_in: inch(F.loader.chuteH),
+      chuteWidth_in: inch(F.loader.width),
+      mountHeight_in: inch(F.loader.mount),
+      mounted: 'hangs on the inside of the alliance wall',
+      source: 'Appendix A: field element locations and loader specifications',
+    })),
     elements: {
       pin: {
         length_in: inch(F.pin.length),
@@ -96,16 +113,16 @@ export function fieldSpec() {
       },
     },
     matchLoads: {
-      match: { perAlliance: '10 Cups + 10 alliance-color Pins + 1 yellow/yellow Pin', source: 'game manual summary; order of release is an assumption' },
-      skills: { redYellowPins: 3, blueYellowPins: 4, cups: 7, note: 'begin off the field as Match Loads', source: 'game manual (Skills), as quoted' },
+      match: { perAlliance: '10 Cups + 10 alliance/yellow Pins + 1 yellow/yellow Pin', source: 'game manual field definition; the order they come out is an assumption' },
+      skills: { redYellowPins: 3, blueYellowPins: 4, cups: 7, note: 'begin off the field as Match Loads; the neutral Goals start empty', source: 'game manual (Robot Skills), Figure RSC4-1' },
     },
-    preloads: { perRobot: '1 alliance-color Pin', source: 'VEXcode VR playground; game manual summary' },
+    preloads: { perRobot: '1 alliance/yellow Pin (2 per alliance)', source: 'game manual field definition' },
     robotStartTiles: (['red', 'blue'] as const).flatMap((a) => F.startPoses(a).map((p) => ({ alliance: a, label: p.label, ...pt(p.x, p.z), source: 'assumption' }))),
     startingLayout: {
-      note: 'Elements marked "official" are the 20 in the VEXcode VR layout. "filled" elements complete the full field count symmetrically and are an assumption until checked against the manual.',
-      pins: layout.pins.map((p) => ({ ...pt(p.x, p.z), colors: p.colors, source: p.source })),
-      cups: layout.cups.map((c) => ({ ...pt(c.x, c.z), source: c.source })),
-      tallGoal: { pin: ['yellow', 'yellow'], source: 'assumption' },
+      note: 'Head-to-Head Match layout from the Scoring Object Locations sheet. Pin colors: standing [down, up]; lying [outer end, inner end]. Which Cups start clear side up is an assumption.',
+      pins: layout.pins.map((p) => ({ ...pt(p.x, p.z), colors: p.colors, pose: p.pose, ...(p.goal ? { goal: p.goal } : {}) })),
+      cups: layout.cups.map((c) => ({ ...pt(c.x, c.z), side_up: c.opaqueUp ? 'gray' : 'clear' })),
+      source: 'Appendix A: scoring object locations',
     },
   };
 }
@@ -123,81 +140,99 @@ const octagon = (cx: number, cy: number, r: number) =>
 export function layoutSvg(): string {
   const S = 5; // px per inch
   const M = 60;
-  const W = 144 * S + M * 2;
-  const H = 144 * S + M * 2 + 90;
-  const X = (m: number) => M + (m / IN + 72) * S;
-  const Y = (m: number) => M + (m / IN + 72) * S;
+  const FI = (F.half * 2) / IN; // inside size in inches
+  const W = FI * S + M * 2;
+  const H = FI * S + M * 2 + 90;
+  const X = (m: number) => M + (m / IN + FI / 2) * S;
+  const Y = X;
+  const len = (m: number) => (m / IN) * S;
   const layout = startingLayout();
   let s = svgOpen(W, H, 'Override starting layout (VEXsim)');
-  // Tiles and tape.
-  s += `<rect x="${M}" y="${M}" width="${144 * S}" height="${144 * S}" fill="#8d9097" stroke="#333" stroke-width="3"/>\n`;
+  s += `<rect x="${M - len(F.wallThickness)}" y="${M - len(F.wallThickness)}" width="${FI * S + 2 * len(F.wallThickness)}" height="${FI * S + 2 * len(F.wallThickness)}" fill="#e9ecef" stroke="#333" stroke-width="1.5"/>\n`;
+  s += `<rect x="${M}" y="${M}" width="${FI * S}" height="${FI * S}" fill="#8d9097" stroke="#333" stroke-width="1.5"/>\n`;
   for (let i = 1; i < 6; i++) {
-    s += `<line x1="${M + i * 24 * S}" y1="${M}" x2="${M + i * 24 * S}" y2="${M + 144 * S}" stroke="#7a7d84" stroke-width="1.5"/>\n`;
-    s += `<line x1="${M}" y1="${M + i * 24 * S}" x2="${M + 144 * S}" y2="${M + i * 24 * S}" stroke="#7a7d84" stroke-width="1.5"/>\n`;
+    const p = M + (i * FI * S) / 6;
+    s += `<line x1="${p}" y1="${M}" x2="${p}" y2="${M + FI * S}" stroke="#7a7d84" stroke-width="1.5"/>\n`;
+    s += `<line x1="${M}" y1="${p}" x2="${M + FI * S}" y2="${p}" stroke="#7a7d84" stroke-width="1.5"/>\n`;
   }
-  const tape = `stroke="#ffffff" stroke-width="${2 * S}" stroke-linecap="butt" fill="none"`;
-  s += `<line x1="${M}" y1="${M}" x2="${M + 144 * S}" y2="${M + 144 * S}" ${tape} opacity="0.9"/>\n`;
-  s += `<line x1="${M + 144 * S}" y1="${M}" x2="${M}" y2="${M + 144 * S}" ${tape} opacity="0.9"/>\n`;
-  const c = M + 72 * S;
-  const d = 24 * S;
-  s += `<polygon points="${c - d},${c} ${c},${c - d} ${c + d},${c} ${c},${c + d}" ${tape}/>\n`;
-  s += `<line x1="${c - d}" y1="${c}" x2="${c + d}" y2="${c}" ${tape}/><line x1="${c}" y1="${c - d}" x2="${c}" y2="${c + d}" ${tape}/>\n`;
+  // Tape: Midfield diamond, Autonomous Line (doubled NW-SE), Load Zones.
+  const tape = (w: number) => `stroke="#ffffff" stroke-width="${w * S}" stroke-linecap="butt" fill="none"`;
+  const d = OVERRIDE.midfieldHalfDiagonal;
+  const e = F.autoLineEnd;
+  s += `<polygon points="${X(-d)},${Y(0)} ${X(0)},${Y(-d)} ${X(d)},${Y(0)} ${X(0)},${Y(d)}" ${tape(2)}/>\n`;
+  const o = (1.1 / Math.SQRT2) * S;
+  for (const k of [-o, o]) {
+    s += `<line x1="${X(-e) + k}" y1="${Y(-e) - k}" x2="${X(-d / 2) + k}" y2="${Y(-d / 2) - k}" ${tape(1)}/>`;
+    s += `<line x1="${X(d / 2) + k}" y1="${Y(d / 2) - k}" x2="${X(e) + k}" y2="${Y(e) - k}" ${tape(1)}/>\n`;
+  }
+  s += `<line x1="${X(e)}" y1="${Y(-e)}" x2="${X(d / 2)}" y2="${Y(-d / 2)}" ${tape(2)}/><line x1="${X(-d / 2)}" y1="${Y(d / 2)}" x2="${X(-e)}" y2="${Y(e)}" ${tape(2)}/>\n`;
+  for (const [sx, c] of [[-1, COLOR.red], [1, COLOR.blue]] as const) {
+    for (const sz of [-1, 1]) {
+      const zx = sx * (F.half - F.loadZone.across);
+      const zz = sz * (F.half - F.loadZone.along);
+      s += `<polyline points="${X(zx)},${Y(sz * F.half)} ${X(zx)},${Y(zz)} ${X(sx * F.half)},${Y(zz)}" fill="none" stroke="${c}" stroke-width="${2 * S}"/>\n`;
+    }
+  }
   // Alliance stations.
-  s += `<rect x="${M - 22}" y="${M}" width="14" height="${144 * S}" fill="${COLOR.red}"/><rect x="${M + 144 * S + 8}" y="${M}" width="14" height="${144 * S}" fill="${COLOR.blue}"/>\n`;
-  s += `<text x="${M - 30}" y="${c}" font-size="16" fill="${COLOR.red}" text-anchor="middle" transform="rotate(-90 ${M - 30} ${c})">RED ALLIANCE STATION</text>\n`;
-  s += `<text x="${M + 144 * S + 32}" y="${c}" font-size="16" fill="${COLOR.blue}" text-anchor="middle" transform="rotate(90 ${M + 144 * S + 32} ${c})">BLUE ALLIANCE STATION</text>\n`;
-  s += `<text x="${c}" y="${M - 18}" font-size="16" text-anchor="middle" fill="#333">N</text>\n`;
+  const c0 = M + (FI * S) / 2;
+  s += `<rect x="${M - 30}" y="${M}" width="12" height="${FI * S}" fill="${COLOR.red}"/><rect x="${M + FI * S + 18}" y="${M}" width="12" height="${FI * S}" fill="${COLOR.blue}"/>\n`;
+  s += `<text x="${M - 38}" y="${c0}" font-size="16" fill="${COLOR.red}" text-anchor="middle" transform="rotate(-90 ${M - 38} ${c0})">RED ALLIANCE STATION</text>\n`;
+  s += `<text x="${M + FI * S + 40}" y="${c0}" font-size="16" fill="${COLOR.blue}" text-anchor="middle" transform="rotate(90 ${M + FI * S + 40} ${c0})">BLUE ALLIANCE STATION</text>\n`;
+  s += `<text x="${c0}" y="${M - 24}" font-size="16" text-anchor="middle" fill="#333">N</text><text x="${c0}" y="${M + FI * S + 36}" font-size="14" text-anchor="middle" fill="#333">audience (S)</text>\n`;
   // Robot start tiles.
   for (const a of ['red', 'blue'] as const) {
     for (const p of F.startPoses(a)) {
       s += `<rect x="${X(p.x) - 9 * S}" y="${Y(p.z) - 9 * S}" width="${18 * S}" height="${18 * S}" fill="none" stroke="${COLOR[a]}" stroke-width="2" stroke-dasharray="8 5"/>\n`;
     }
   }
-  // Loaders and Toggles.
+  // Loaders and Toggles (on the wall top).
   for (const l of F.loaders) {
-    const lx = Math.sign(l.x) * (F.half - 0.13);
-    s += `<rect x="${X(lx) - 0.13 / IN * S}" y="${Y(l.z) - 0.12 / IN * S}" width="${(0.26 / IN) * S}" height="${(0.24 / IN) * S}" fill="#9aa0a8" stroke="${COLOR[l.alliance]}" stroke-width="3"/>\n`;
-    s += `<circle cx="${X(lx)}" cy="${Y(l.z)}" r="${(0.075 / IN) * S}" fill="#222"/>\n`;
+    s += `<rect x="${X(l.x) - len(F.loader.depth) / 2}" y="${Y(l.z) - len(F.loader.width) / 2}" width="${len(F.loader.depth)}" height="${len(F.loader.width)}" fill="#cfd8e3" stroke="${COLOR[l.alliance]}" stroke-width="3"/>\n`;
   }
   for (const t of F.toggles) {
-    const len = (F.toggleLength / IN) * S;
-    const w = 10;
+    const L = len(F.toggleLength);
+    const w = len(F.toggleFace);
     s += t.alongX
-      ? `<rect x="${X(t.x) - len / 2}" y="${Y(t.z) - w / 2}" width="${len}" height="${w}" fill="${COLOR.yellow}" stroke="#333"/>\n`
-      : `<rect x="${X(t.x) - w / 2}" y="${Y(t.z) - len / 2}" width="${w}" height="${len}" fill="${COLOR.yellow}" stroke="#333"/>\n`;
+      ? `<rect x="${X(t.x) - L / 2}" y="${Y(t.z) - w / 2}" width="${L}" height="${w}" fill="${COLOR.yellow}" stroke="#333"/>\n`
+      : `<rect x="${X(t.x) - w / 2}" y="${Y(t.z) - L / 2}" width="${w}" height="${L}" fill="${COLOR.yellow}" stroke="#333"/>\n`;
   }
   // Goals.
   for (const g of F.goals) {
-    const fill = g.kind === 'alliance' ? COLOR[g.alliance!] : '#dcdcdc';
-    s += `<polygon points="${octagon(X(g.x), Y(g.z), (F.goalRadiusBottom / IN) * S)}" fill="${fill}" stroke="#222" stroke-width="2"/>\n`;
-    s += `<circle cx="${X(g.x)}" cy="${Y(g.z)}" r="${(0.03 / IN) * S}" fill="#151515"/>\n`;
+    const fill = g.kind === 'alliance' ? COLOR[g.alliance!] : '#2a2a2a';
+    s += `<polygon points="${octagon(X(g.x), Y(g.z), len(F.goalRadiusBottom))}" fill="${fill}" stroke="#111" stroke-width="2"/>\n`;
   }
-  // Pins (split circle: tapered half / flat half) and Cups.
-  const pinR = (F.pin.radius / IN) * S;
+  // Cups (gray or clear side up), then Pins: standing ones as split circles (up half on
+  // top), lying ones as long hexagons.
+  const cupR = len(F.cup.topRadius);
+  for (const cp of layout.cups) {
+    s += `<circle cx="${X(cp.x)}" cy="${Y(cp.z)}" r="${cupR}" fill="${cp.opaqueUp ? '#55595f' : '#eef4fb'}" stroke="#222" stroke-width="1.5"/>\n`;
+  }
+  const pinR = len(F.pin.radius) * 0.8;
   for (const p of layout.pins) {
     const x = X(p.x);
     const y = Y(p.z);
-    const dash = p.source === 'filled' ? ' stroke-dasharray="3 2"' : '';
-    s += `<path d="M ${x - pinR} ${y} A ${pinR} ${pinR} 0 0 1 ${x + pinR} ${y} Z" fill="${COLOR[p.colors[0]]}"/>`;
-    s += `<path d="M ${x - pinR} ${y} A ${pinR} ${pinR} 0 0 0 ${x + pinR} ${y} Z" fill="${COLOR[p.colors[1]]}"/>`;
-    s += `<circle cx="${x}" cy="${y}" r="${pinR}" fill="none" stroke="#111" stroke-width="1.5"${dash}/>\n`;
-  }
-  const cupR = (0.04 / IN) * S;
-  for (const cp of layout.cups) {
-    const dash = cp.source === 'filled' ? ' stroke-dasharray="3 2"' : '';
-    s += `<circle cx="${X(cp.x)}" cy="${Y(cp.z)}" r="${cupR}" fill="#e6eef7" stroke="#55606c" stroke-width="2"${dash}/><circle cx="${X(cp.x)}" cy="${Y(cp.z)}" r="${cupR * 0.55}" fill="#b8b8bd"/>\n`;
+    if (p.pose === 'lying') {
+      const [dx, dz] = p.outward!;
+      const hl = len(F.pin.length) / 2;
+      const hw = len(F.pin.radius);
+      const ang = (Math.atan2(dz, dx) * 180) / Math.PI;
+      s += `<g transform="translate(${x} ${y}) rotate(${ang})"><polygon points="0,${-hw} ${hl * 0.55},${-hw * 0.8} ${hl},${-hw * 0.5} ${hl},${hw * 0.5} ${hl * 0.55},${hw * 0.8} 0,${hw}" fill="${COLOR[p.colors[0]]}" stroke="#111"/><polygon points="0,${-hw} ${-hl * 0.55},${-hw * 0.8} ${-hl},${-hw * 0.5} ${-hl},${hw * 0.5} ${-hl * 0.55},${hw * 0.8} 0,${hw}" fill="${COLOR[p.colors[1]]}" stroke="#111"/></g>\n`;
+    } else {
+      s += `<path d="M ${x - pinR} ${y} A ${pinR} ${pinR} 0 0 1 ${x + pinR} ${y} Z" fill="${COLOR[p.colors[1]]}"/>`;
+      s += `<path d="M ${x - pinR} ${y} A ${pinR} ${pinR} 0 0 0 ${x + pinR} ${y} Z" fill="${COLOR[p.colors[0]]}"/>`;
+      s += `<circle cx="${x}" cy="${y}" r="${pinR}" fill="none" stroke="#111" stroke-width="1.5"/>\n`;
+    }
   }
   // Legend.
-  const ly = M + 144 * S + 40;
+  const ly = M + FI * S + 64;
   s += `<g font-size="14" fill="#222">
-  <polygon points="${octagon(M + 10, ly, 9)}" fill="#dcdcdc" stroke="#222"/><text x="${M + 26}" y="${ly + 5}">Goal (neutral / alliance)</text>
-  <circle cx="${M + 230}" cy="${ly}" r="9" fill="${COLOR.red}" stroke="#111"/><text x="${M + 246}" y="${ly + 5}">Pin</text>
-  <circle cx="${M + 300}" cy="${ly}" r="9" fill="#e6eef7" stroke="#55606c" stroke-width="2"/><text x="${M + 316}" y="${ly + 5}">Cup</text>
-  <rect x="${M + 370}" y="${ly - 5}" width="30" height="10" fill="${COLOR.yellow}" stroke="#333"/><text x="${M + 408}" y="${ly + 5}">Toggle</text>
-  <rect x="${M + 480}" y="${ly - 9}" width="20" height="18" fill="#9aa0a8"/><text x="${M + 508}" y="${ly + 5}">Loader</text>
-  <rect x="${M + 580}" y="${ly - 9}" width="18" height="18" fill="none" stroke="#333" stroke-dasharray="5 3"/><text x="${M + 606}" y="${ly + 5}">Start tile</text>
-  <text x="${M}" y="${ly + 32}" fill="#555">Solid outline = official VEXcode VR position · dashed outline = filled in by VEXsim (assumption).</text>
-  <text x="${M}" y="${ly + 52}" fill="#555">Original drawing by VEXsim from its field data; not an official VEX drawing.</text>
+  <polygon points="${octagon(M + 10, ly, 9)}" fill="#2a2a2a" stroke="#111"/><text x="${M + 26}" y="${ly + 5}">Goal</text>
+  <circle cx="${M + 90}" cy="${ly}" r="8" fill="${COLOR.yellow}" stroke="#111"/><text x="${M + 104}" y="${ly + 5}">Pin (top half up)</text>
+  <circle cx="${M + 250}" cy="${ly}" r="9" fill="#55595f" stroke="#222"/><text x="${M + 264}" y="${ly + 5}">Cup, gray up</text>
+  <circle cx="${M + 380}" cy="${ly}" r="9" fill="#eef4fb" stroke="#222"/><text x="${M + 394}" y="${ly + 5}">Cup, clear up</text>
+  <rect x="${M + 510}" y="${ly - 5}" width="30" height="10" fill="${COLOR.yellow}" stroke="#333"/><text x="${M + 548}" y="${ly + 5}">Toggle</text>
+  <rect x="${M + 620}" y="${ly - 9}" width="18" height="18" fill="none" stroke="#333" stroke-dasharray="5 3"/><text x="${M + 646}" y="${ly + 5}">Start (assumed)</text>
+  <text x="${M}" y="${ly + 30}" fill="#555">Positions from the manual’s Appendix A sheets. Original drawing by VEXsim from its field data; not an official VEX drawing.</text>
 </g>\n`;
   return s + '</svg>\n';
 }
@@ -284,8 +319,8 @@ export function toggleSvg(): string {
   // (300 + 464 + mounts fits the 860 px width)
   s += `<rect x="300" y="135" width="${len}" height="30" fill="${COLOR.yellow}" stroke="#222"/>`;
   s += `<rect x="290" y="120" width="10" height="60" fill="#9aa3ad"/><rect x="${300 + len}" y="120" width="10" height="60" fill="#9aa3ad"/>`;
-  s += `<text x="${300 + len / 2}" y="40" text-anchor="middle" font-weight="bold">Top view (mounted at the center of a field wall)</text>`;
-  s += `<text x="${300 + len / 2}" y="210" text-anchor="middle">${r1(F.toggleLength / IN)}″ long, turns on a shaft along its length</text>`;
+  s += `<text x="${300 + len / 2}" y="40" text-anchor="middle" font-weight="bold">Top view (on top of the wall, at its middle)</text>`;
+  s += `<text x="${300 + len / 2}" y="210" text-anchor="middle">${r1(F.toggleLength / IN)}″ long, ${r1(F.toggleFace / IN)}″ faces, axis ${r1(F.toggleAxisHeight / IN)}″ above the floor</text>`;
   s += `<text x="${300 + len / 2}" y="270" text-anchor="middle" font-size="12">Counts for an alliance only when showing its color with no Robot touching it.</text></g>`;
   return s + '</svg>\n';
 }
@@ -297,17 +332,16 @@ export function fieldSpecMarkdown(): string {
   let md = `# Override field spec (VEXsim)\n\n> Generated from the simulator's field data by \`npm run reference\`. Don't edit by hand. Each value names its source; **assumption** marks values VEXsim had to choose. The official game manual always wins.\n\n`;
   md += `![Starting layout](diagrams/starting-layout.svg)\n\n`;
   md += `## Coordinates\nOrigin at the field center. **+x** points toward the blue Alliance Station (East wall); red stands on the West wall. **+z** points toward the South wall. Diagrams put North at the top. Values are in inches, with meters in \`field-spec.json\`.\n\n`;
-  md += `## Field\n- 12 ft × 12 ft, made of 36 foam tiles (6 × 6, 24″ each)\n- Tape: two corner-to-corner diagonals make the four Quadrants (N, E, S, W); the Midfield is a 48″ diamond with a center cross\n- Counts: 63 Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue), 56 Cups, 9 Goals, 4 Toggles, 4 Loaders *(game manual)*\n\n`;
+  md += `## Field\n- ${spec.field.insideWallToWall_in}″ square inside the walls (Appendix A), 36 foam tiles (6 × 6)\n- Perimeter: ${spec.field.perimeter.height_in}″ tall, ${spec.field.perimeter.thickness_in}″ thick (${spec.field.perimeter.note})\n- Goals and starting elements sit on a grid ${spec.field.goalGrid_in.join('″ and ')}″ from the center\n- Tape: Midfield ${spec.field.tape.midfield}; Autonomous Line ${spec.field.tape.autonomousLine}; Load Zones: ${spec.field.tape.loadZones}\n- Counts: 63 Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue), 56 Cups, 9 Goals, 4 Toggles, 4 Loaders *(game manual)*\n\n`;
   md += `## Goals\n` + rows(['Goal', 'Kind', 'Quadrant', 'x″', 'z″', 'Height″'], spec.goals.map((g) => [g.id, g.kind + (g.alliance ? ` (${g.alliance})` : ''), g.quadrant ?? 'Midfield', g.x_in, g.z_in, g.height_in])) + `\nChamfered-square footprint, ${spec.goals[0].baseAcrossFlats_in}″ across the flats, tapering to ${spec.goals[0].topAcrossFlats_in}″ at the top.\n\n`;
-  md += `## Toggles\n` + rows(['Quadrant', 'x″', 'z″', 'Length″'], spec.toggles.map((t) => [t.quadrant, t.x_in, t.z_in, t.length_in])) + `\nThree faces (yellow neutral, red, blue). A Toggle counts only when set to a color and not touched by any Robot. ![Toggle](diagrams/toggle.svg)\n\n`;
-  md += `## Loaders\n` + rows(['Alliance', 'x″', 'z″'], spec.loaders.map((l) => [l.alliance, l.x_in, l.z_in])) + '\n';
+  md += `## Toggles\n` + rows(['Quadrant', 'x″', 'z″', 'Axis height″', 'Starts'], spec.toggles.map((t) => [t.quadrant, t.x_in, t.z_in, t.axisHeight_in, t.startingOrientation])) + `\n${spec.toggles[0].length_in}″ long triangular prisms with ${spec.toggles[0].faceWidth_in}″ faces (yellow, red, blue), ${spec.toggles[0].mounted}. A Toggle counts only when set to a color and not touched by any Robot. ![Toggle](diagrams/toggle.svg)\n\n`;
+  md += `## Loaders\n` + rows(['Alliance', 'x″', 'z″'], spec.loaders.map((l) => [l.alliance, l.x_in, l.z_in])) + `\nEach ${spec.loaders[0].mounted}: a ${spec.loaders[0].chuteHeight_in}″ clear chute, ${spec.loaders[0].chuteWidth_in}″ wide, on a ${spec.loaders[0].mountHeight_in}″ mount.\n\n`;
   md += `## Game elements\n![Elements](diagrams/elements.svg)\n\n- **Pin:** ${spec.elements.pin.length_in}″ long, hexagonal and symmetric (${spec.elements.pin.collarAcrossCorners_in}″ across the collar's corners, ${spec.elements.pin.acrossFlats_in}″ across the flats). Each end is a ${spec.elements.pin.tipAcross_in}″ tip, so either end nests into a Goal or Cup. Each half scores separately.\n- **Cup:** ${spec.elements.cup.height_in}″ tall, ${spec.elements.cup.topAcross_in}″ across the top, ${spec.elements.cup.waistAcross_in}″ at the waist; clear lower half, opaque upper half. A Pin half inside the opaque half doesn't score.\n- **Goals:** ${spec.elements.goal.footprint}; ${spec.elements.goal.module}. ${spec.elements.goal.colors}.\n- **Stacking:** ${spec.elements.stacking.pinInGoal}; ${spec.elements.stacking.cupOnPin}; ${spec.elements.stacking.pinInCup}.\n\n`;
   md += `## Match Loads and Preloads\n- **Match:** ${spec.matchLoads.match.perAlliance} per alliance *(${spec.matchLoads.match.source})*\n- **Skills:** ${spec.matchLoads.skills.redYellowPins} red/yellow Pins, ${spec.matchLoads.skills.blueYellowPins} blue/yellow Pins and ${spec.matchLoads.skills.cups} Cups ${spec.matchLoads.skills.note} *(${spec.matchLoads.skills.source})*\n- **Preload:** ${spec.preloads.perRobot} per robot\n\n`;
-  const off = spec.startingLayout.pins.filter((p) => p.source === 'official').length + spec.startingLayout.cups.filter((c) => c.source === 'official').length;
-  md += `## Starting layout\n${off} elements come from the official VEXcode VR layout. The rest (${spec.startingLayout.pins.length} Pins and ${spec.startingLayout.cups.length} Cups on the field in total, plus 1 yellow Pin on the Tall Goal) are **filled in symmetrically by VEXsim (assumption)**. Replace them in \`startingLayout()\` in \`src/games/override/game.ts\` once checked against the manual, then run \`npm run reference\`.\n\n`;
-  md += rows(['Element', 'Colors (tapered / flat)', 'x″', 'z″', 'Source'], [
-    ...spec.startingLayout.pins.map((p) => ['Pin', p.colors.join(' / '), p.x_in, p.z_in, p.source]),
-    ...spec.startingLayout.cups.map((c) => ['Cup', '—', c.x_in, c.z_in, c.source]),
+  md += `## Starting layout\n${spec.startingLayout.note} *(${spec.startingLayout.source})*\n\n`;
+  md += rows(['Element', 'Colors / side', 'Pose', 'x″', 'z″'], [
+    ...spec.startingLayout.pins.map((p) => ['Pin', p.colors.join(' / '), p.pose, p.x_in, p.z_in]),
+    ...spec.startingLayout.cups.map((c) => ['Cup', `${c.side_up} up`, 'standing', c.x_in, c.z_in]),
   ]);
   return md;
 }

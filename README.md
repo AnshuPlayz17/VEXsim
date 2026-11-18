@@ -88,16 +88,18 @@ Placing takes real time: the lift travels to the top of the stack, and the wrist
 
 | Item | Value used |
 | --- | --- |
-| Field | 12′ × 12′ foam tiles; corner-to-corner tape makes four Quadrants; 48″ Midfield diamond |
-| Goals | 9 Goals on a chamfered-square footprint (5.61″ across the flats), all topped by the same 3.25″ tapered module with a 2.37″ hole and code markers. Neutral Goals are black with yellow line art on a base: Tall 8.77″ (center), four Short 5.77″ at (±24″, ±47″)/(±47″, ±24″). Four Alliance Goals are the bare 3.25″ module in red or blue |
-| Toggles | 656 mm three-face (yellow/red/blue) prisms at the center of each wall. They count only when **no robot is touching them** |
-| Loaders | 4, in the corners beside the Alliance Stations. Match Loads: 10 Cups + 10 alliance Pins + 1 yellow Pin per alliance |
+| Field | 140.41″ square inside an 11.54″ tall, 2″ thick white perimeter with a checker band (manual Appendix A); 6 × 6 foam tiles. Tape: Midfield diamond (corners 23.55″ out), the Autonomous Line corner to corner (doubled NW–SE) and an alliance-colored Load Zone L in each corner |
+| Goals | 9 Goals on a chamfered-square footprint (5.61″ across the flats), all topped by the same 3.25″ tapered module with a 2.37″ hole and code markers. Neutral Goals are black with yellow line art on a base: Tall 8.77″ (center), four Short 5.77″; every Goal on the 23.55″ / 47.10″ grid from Appendix A. Four Alliance Goals are the bare 3.25″ module in red or blue |
+| Toggles | 25.8″ three-face (yellow/red/blue) prisms **on top of the perimeter** at the middle of each wall, axis 13.20″ up. They start yellow up and into the field, with that side's alliance color facing out. They count only when **no robot is touching them** |
+| Loaders | 4 clear chutes hanging on the alliance walls, 58.77″ either side of center. Match Loads per alliance: 10 Cups + 10 alliance/yellow Pins + 1 yellow/yellow Pin. Skills: 7 Cups, 3 red/yellow and 4 blue/yellow Pins, with the neutral Goals starting empty |
 | Pins | 63 two-color Pins (20 red/yellow, 20 blue/yellow, 19 yellow/yellow, 4 red/blue): 6.5″ long, hexagonal and **symmetric**, with a 2.35″ tip at each end and a 3.16″ collar, so either end nests. R / A flips which color half goes down. 1 alliance Pin preload per robot |
 | Cups | 56 Cups, 6.48″ tall, 3.16″ across the top with a 2.32″ waist, **clear lower half and opaque upper half**. A Cup rests on a Pin's collar, and the next Pin's tip sits at its waist. R / A flips a Cup to choose which Pin half it hides |
 | Scoring | **Each visible Pin half**: 5 for a red/blue half, 10 for a yellow half owned via the quadrant Toggle. A half inside a Cup’s opaque half doesn’t count. Robot in Midfield 8 · Autonomous Bonus 12 (6 each on a tie), decided on Pin points |
 | Timing | 0:15 auto + 1:45 driver (last 0:10 endgame). Driver Skills 0:60 |
 
-**Assumptions:** the starting spots of the field elements beyond the 20 in the official VEXcode VR layout (they're filled in on the same 1-foot grid with the field's red/blue symmetry), one yellow Pin starting on the Tall Goal, the order Match Loads come out, and the Tall Goal's yellow halves going to the alliance with more robots in the Midfield. The Autonomous Win Point isn't modeled.
+| Starting layout | From the manual's Scoring Object Locations sheet: a yellow/yellow Pin on each neutral Goal, four "stars" (a Cup with four Pins lying around it) on the NW–SE Autonomous Line, Cups holding yellow/yellow Pins on the other diagonal, red/blue Pins in Cups on the Midfield corners, and Cup / Cup + Pin / Cup groups against every wall. 37 Pins and 36 Cups, matching the manual's counts |
+
+**Assumptions:** which 12 Cups start clear side up (the sheets don't make it legible), the robots' starting spots, the order Match Loads come out, and the Tall Goal's yellow halves going to the alliance with more robots in the Midfield. The Autonomous Win Point isn't modeled.
 
 ### Sources
 - Override game manual summaries ([manual page](https://www.vexrobotics.com/v5/competition/vrc-current-game), [Q&A](https://events.vex.com/faqs/51/pdf)), the [VEXcode VR Override playground](https://api.vex.com/vr/home/playgrounds/v5rc_override.html) and [Hero Bot Flex](https://api.vex.com/vr/home/robots/flex/index.html), and the open [MMGA Override sim](https://github.com/wittodetto/MMGA_Override_AutonSim), used for field coordinates and element dimensions.

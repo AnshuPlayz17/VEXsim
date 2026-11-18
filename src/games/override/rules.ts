@@ -30,8 +30,8 @@ export const OVERRIDE = {
     yellowHalf: 10,
     robotInMidfield: 8,
   },
-  /** Midfield diamond |x| + |z| <= 0.6 m (the taped 48" diamond). */
-  midfieldHalfDiagonal: 0.6,
+  /** Midfield diamond |x| + |z| <= 23.55" (corners on the Pins next to the Tall Goal; Appendix A). */
+  midfieldHalfDiagonal: 23.55 * 0.0254,
   pinCounts: { redYellow: 20, blueYellow: 20, yellowYellow: 19, redBlue: 4 },
   cups: 56,
   /** Robots may expand to 50" tall during a match. */

@@ -11,6 +11,7 @@ Tags: **[rules]** · **[layout]** starting positions · **[perimeter]** · **[go
 | Link | What it shows | Tags |
 | --- | --- | --- |
 | [V5RC Override game page and manual](https://www.vexrobotics.com/v5/competition/vrc-current-game) | The game manual: field, elements, scoring (SC rules), Skills | rules, layout, perimeter, goals, pins, cups, toggles, loaders |
+| Game manual, Appendix A (field drawings: element locations, scoring object locations, perimeter, toggles, loaders, tape) | Every field position and dimension in the sim; shared by the user from the manual. Measurements only, no copies | layout, perimeter, goals, pins, cups, toggles, loaders |
 | [Override Q&A](https://events.vex.com/faqs/51/pdf) | Official rulings, e.g. scoring of Pin halves and Cups | rules, pins, cups, toggles |
 | [VEXcode VR: V5 26-27 Override playground](https://api.vex.com/vr/home/playgrounds/v5rc_override.html) | Official virtual field and its starting layout | layout, goals, pins, cups, toggles, loaders |
 | [Using the V5 26-27 Override Playground](https://kb.vex.com/hc/en-us/articles/51426592122004-Using-the-VEX-V5-26-27-Override-Playground-Window) | Start locations, preloads, Match Load buttons | layout, loaders |
