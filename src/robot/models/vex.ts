@@ -34,6 +34,10 @@ export interface VexSpec {
    * out past the frame to score, in over the top to load. Arm length (in) and swing (deg).
    */
   swingArm?: { length: number; swingDeg: number };
+  /** No cross member at the claw end: the frame is a U the robot backs over Goals with. */
+  openBack?: boolean;
+  /** Claw (arm out) distance from the robot's center toward the claw end, inches. */
+  clawAt?: number;
 }
 
 export function vexModel(spec: VexSpec): ModelBuilder {
@@ -91,14 +95,22 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
           : omniWheel(ctx, root, wheelD, 1 * IN, fx, axleY, zr - side * 1.1 * IN);
         w.userData.dynamic = true;
       wheels.push(w);
-        v5Motor(ctx, root, fx, axleY + 0.35 * IN, zr - side * 3.6 * IN, s.cartridge, side);
-        motorAt.push(new THREE.Vector3(fx, axleY + 1.5 * IN, zr - side * 3.6 * IN));
+        // An open bay can't have motors in it: those sit up over their wheel, between the rails.
+        const inBay = s.openBack && fx > 0;
+        const mz = inBay ? zr - side * 1.1 * IN : zr - side * 3.6 * IN;
+        const my = inBay ? axleY + wheelD / 2 + 1.4 * IN : axleY + 0.35 * IN;
+        v5Motor(ctx, root, fx, my, mz, s.cartridge, side);
+        motorAt.push(new THREE.Vector3(fx, my + 1.1 * IN, mz));
         nut(ctx, root, fx, axleY, side * (W / 2 + 0.1 * IN));
       }
     }
     // Cross members front and back.
-    cChannel(ctx, root, W - 1 * IN, L / 2 - 0.6 * IN, railY, 0, { color: metal, along: 'z' });
+    if (!s.openBack) cChannel(ctx, root, W - 1 * IN, L / 2 - 0.6 * IN, railY, 0, { color: metal, along: 'z' });
     cChannel(ctx, root, W - 1 * IN, -L / 2 + 0.6 * IN, railY, 0, { color: metal, along: 'z' });
+    if (s.openBack) {
+      // The U's closed end: a cross brace at the back of the bay, where a Goal stops.
+      cChannel(ctx, root, W - 1 * IN, ((s.clawAt ?? 5) - 3.8) * IN, railY, 0, { color: metal, along: 'z' });
+    }
   }
   // Electronics.
   const brainPos = new THREE.Vector3(-L / 2 + 3 * IN, railY + 2.2 * IN, 0);
@@ -190,7 +202,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   carriage.userData.dynamic = true;
   root.add(carriage);
   if (s.lift === 'dr4b' || s.lift === 'cascade') {
-    for (const side of [-1, 1]) cChannel(ctx, carriage, L / 2 - towerX, (L / 2 - towerX) / 2, 0, side * (towerZ - 0.8 * IN), { color: metal });
+    for (const side of [-1, 1]) cChannel(ctx, carriage, L / 2 - towerX, (L / 2 - towerX) / 2, 0, side * (s.openBack ? W / 2 - 2.6 * IN : towerZ - 0.8 * IN), { color: metal });
     if (s.lift === 'dr4b') {
       makeArmBars(stageLen, 'stage1');
       makeArmBars(stageLen, 'stage2');
@@ -205,7 +217,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   // Optional swinging arm: effector → arm (rotates about the pivot) → a level carrier → wrist.
   const sw = s.swingArm;
   const swLen = sw ? sw.length * IN : 0;
-  const effX = L / 2 - 1 * IN - swLen;
+  const effX = s.clawAt !== undefined ? s.clawAt * IN - swLen - 2.8 * IN : L / 2 - 1 * IN - swLen;
   const swingG = new THREE.Group();
   const levelG = new THREE.Group();
   swingG.userData.dynamic = levelG.userData.dynamic = true;

@@ -51,6 +51,11 @@ export interface RobotConfig {
   grabsStacks?: boolean;
   /** Team driver macros. 'lower-release': grabbing lifts to mid height; hold R2 to lower, let go to release. */
   macros?: 'lower-release';
+  /**
+   * Open bay in the claw end of the frame (m): the robot backs over a Goal or a field stack
+   * and the claw works inside the frame. `width` across, `depth` in from the end.
+   */
+  bay?: { width: number; depth: number };
 }
 
 /**
@@ -61,6 +66,8 @@ export interface RobotConfig {
 export class Robot {
   readonly body: RAPIER.RigidBody;
   readonly collider: RAPIER.Collider;
+  /** Every solid part of the frame (one box, or the U around an open bay). */
+  private readonly parts: { collider: RAPIER.Collider; shape: RAPIER.Cuboid; offset: { x: number; y: number; z: number } }[] = [];
   readonly mesh = new THREE.Group();
   private readonly visual = new THREE.Group();
   private readonly controller: RAPIER.KinematicCharacterController;
@@ -69,7 +76,6 @@ export class Robot {
   anim: RobotAnim = defaultAnim();
   /** Last motor voltages (for sound and the HUD). */
   voltages: Voltages = [0, 0];
-  private readonly rotateTestShape: RAPIER.Cuboid;
 
   /** Battery and drive-motor temperature. */
   power: PowerState = freshPower();
@@ -105,14 +111,26 @@ export class Robot {
     const hx = cfg.length / 2;
     const hz = cfg.width / 2;
     const hy = cfg.height / 2;
-    this.collider = world.createCollider(
-      RAPIER.ColliderDesc.roundCuboid(hx - 0.01, hy - 0.01, hz - 0.01, 0.01)
-        .setTranslation(0, hy, 0)
-        .setCollisionGroups(opts.ghost ? groups(0, 0) : ROBOT_GROUPS)
-        .setFriction(0.2),
-      this.body,
-    );
-    this.rotateTestShape = new RAPIER.Cuboid(hx, hy - 0.04, hz);
+    // Frame boxes in robot space (x forward = claw end, z right). An open bay leaves a U.
+    const boxes: { cx: number; cz: number; hx: number; hz: number }[] = [];
+    const bay = cfg.bay;
+    if (bay) {
+      const solidLen = 2 * hx - bay.depth;
+      boxes.push({ cx: -hx + solidLen / 2, cz: 0, hx: solidLen / 2, hz });
+      const railW = (2 * hz - bay.width) / 2;
+      for (const side of [-1, 1]) boxes.push({ cx: hx - bay.depth / 2, cz: side * (hz - railW / 2), hx: bay.depth / 2, hz: railW / 2 });
+    } else boxes.push({ cx: 0, cz: 0, hx, hz });
+    for (const b of boxes) {
+      const collider = world.createCollider(
+        RAPIER.ColliderDesc.roundCuboid(b.hx - 0.01, hy - 0.01, b.hz - 0.01, 0.01)
+          .setTranslation(b.cx, hy, b.cz)
+          .setCollisionGroups(opts.ghost ? groups(0, 0) : ROBOT_GROUPS)
+          .setFriction(0.2),
+        this.body,
+      );
+      this.parts.push({ collider, shape: new RAPIER.Cuboid(b.hx, hy - 0.04, b.hz), offset: { x: b.cx, y: 0, z: b.cz } });
+    }
+    this.collider = this.parts[0].collider;
 
     this.controller = world.createCharacterController(0.005);
     this.controller.setUp({ x: 0, y: 1, z: 0 });
@@ -206,14 +224,17 @@ export class Robot {
 
     this.vy -= 9.81 * dt;
     const desired = { x: this.cmd.vx * dt, y: this.vy * dt, z: this.cmd.vz * dt };
-    this.controller.computeColliderMovement(
-      this.collider,
-      desired,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      ROBOT_MOVE_FILTER,
-    );
-    const mv = this.controller.computedMovement();
-    if (this.controller.computedGrounded()) this.vy = 0;
+    // Each part of the frame in turn trims the move, so the U's rails stop on walls and
+    // Goals too while a Goal can slide into the open bay.
+    let mv = desired;
+    let grounded = false;
+    for (const p of this.parts) {
+      this.controller.computeColliderMovement(p.collider, mv, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, ROBOT_MOVE_FILTER);
+      const m = this.controller.computedMovement();
+      mv = { x: m.x, y: m.y, z: m.z };
+      grounded ||= this.controller.computedGrounded();
+    }
+    if (grounded) this.vy = 0;
     // A real collision (wall, goal, another robot) bleeds off the blocked velocity.
     // Ramps only redirect motion upward, so they must not count as a collision.
     if (dt > 0) {
@@ -236,16 +257,20 @@ export class Robot {
 
   private blockedAt(heading: number): boolean {
     const t = this.body.translation();
-    const hit = this.world.intersectionWithShape(
-      { x: t.x, y: t.y + this.cfg.height / 2 + 0.04, z: t.z },
-      yawQuat(heading),
-      this.rotateTestShape,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      groups(GROUP.ROBOT, GROUP.FIELD | GROUP.OVERHEAD),
-      this.collider,
-      this.body,
-    );
-    return !!hit;
+    const [fx, fz] = forwardOf(heading);
+    const [rx, rz] = rightOf(heading);
+    return this.parts.some((p) => {
+      const hit = this.world.intersectionWithShape(
+        { x: t.x + fx * p.offset.x + rx * p.offset.z, y: t.y + this.cfg.height / 2 + 0.04, z: t.z + fz * p.offset.x + rz * p.offset.z },
+        yawQuat(heading),
+        p.shape,
+        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+        groups(GROUP.ROBOT, GROUP.FIELD | GROUP.OVERHEAD),
+        p.collider,
+        this.body,
+      );
+      return !!hit;
+    });
   }
 
   /** Teleport (used for climbing release and resets). */

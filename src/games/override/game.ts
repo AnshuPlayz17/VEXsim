@@ -146,8 +146,11 @@ const PRESETS: RobotConfig[] = [
     power: { motors: 4, cartridge: 'blue', wheelRpm: 450, wheelDia: 3.25 * IN, mass: 15 * LB, mu: 0.75, trackWidth: 12.75 * IN, wheelbase: 10.5 * IN, scrub: 0.1, brake: 'coast' },
     capacity: 2, intakeWidth: 0.16, intakeReach: 0.12, liftTime: 0.85,
     reversed: true, grabsStacks: true, macros: 'lower-release',
+    // U-shaped frame open at the claw end: it backs over a Goal or field stack, claw 5" behind
+    // the center (the autos' tuned SCORE_PIN_BEHIND).
+    bay: { width: 9 * IN, depth: 7.7 * IN },
     stats: { Lift: '3-motor cascade to ~33"', Claw: 'Pneumatic plate, scores off the back', Holds: 'Cup + Pin stack' },
-    model: vexModel({ team: '19109M', length: 17.8, width: 15.5, drive: 'tank4', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 33, rollers: false, accent: 0x1d3f8f, swingArm: { length: 7.5, swingDeg: 180 } }),
+    model: vexModel({ team: '19109M', length: 17.8, width: 15.5, drive: 'tank4', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 33, rollers: false, accent: 0x1d3f8f, swingArm: { length: 4.5, swingDeg: 180 }, openBack: true, clawAt: 5 }),
   },
   {
     id: 'vex-dr4b',
@@ -242,8 +245,10 @@ interface ToggleViz {
   touched: boolean;
 }
 
-/** How close (m) the claw must be to a Goal's center for a Pin to drop into its hole: 1.4". */
-const ALIGN = 1.4 * IN;
+/** How close (m) the claw must be to a Goal's center: the Goal's tapered top and a Cup's flare guide a Pin in. */
+const ALIGN = 2.0 * IN;
+/** Let go up to this far above the stack and the piece still drops onto it. */
+const SEAT_DROP = 2.5 * IN;
 
 type LoadItem = 'cup' | 'yy' | Alliance;
 
@@ -1125,7 +1130,10 @@ class OverrideRuntime implements GameRuntime {
     const robot = this.ctx.robot;
     if (this.held.length >= robot.cfg.capacity) return;
     const front = robot.cfg.length / 2;
+    const bay = !!robot.cfg.bay;
+    const claw = this.clawWorld();
     for (const p of this.pieces) {
+      if (bay) break; // no rollers: the claw closes on what's in the bay
       if (p.state !== 'loose' || p.nestedIn || this.held.some((h) => h.kind === p.kind)) continue;
       const t = p.body.translation();
       const [f, side] = robot.toLocal(t.x, t.z);
@@ -1148,7 +1156,10 @@ class OverrideRuntime implements GameRuntime {
       if (this.held.some((h) => h.kind === p.kind)) continue;
       const t = p.body.translation();
       const [f] = robot.toLocal(t.x, t.z);
-      if (!(robot.inIntake(t.x, t.z, t.y, 0.3) && f < front + Math.max(robot.cfg.intakeReach * 0.6, 0.1))) continue;
+      const inReach = bay
+        ? Math.hypot(t.x - claw.x, t.z - claw.z) < 1.8 * IN && t.y < 0.3
+        : robot.inIntake(t.x, t.z, t.y, 0.3) && f < front + Math.max(robot.cfg.intakeReach * 0.6, 0.1);
+      if (!inReach) continue;
       const rider = p.kind === 'cup' ? this.pieces.find((q) => q.nestedIn === p) : undefined;
       if (rider && robot.cfg.grabsStacks && this.held.length === 0) {
         // Close on the Cup with its Pin standing in it, as one stack.
@@ -1231,7 +1242,7 @@ class OverrideRuntime implements GameRuntime {
       const want = g.stack[g.stack.length - 1]?.type === 'pin' ? 'cup' : 'pin';
       let why = '';
       if (at.d > ALIGN) why = `Not lined up: the claw is ${((at.d - ALIGN) / IN).toFixed(1)}″ off the Goal’s center`;
-      else if (gap > 1.2 * IN) why = `Too high: lower ${(gap / IN).toFixed(1)}″ more before letting go`;
+      else if (gap > SEAT_DROP) why = `Too high: lower ${((gap - SEAT_DROP) / IN).toFixed(1)}″ more before letting go`;
       else if (items[0].type !== want) why = want === 'cup' ? 'This Pin needs a Cup on it before the next Pin' : 'Goals take a Pin here, not a Cup';
       else {
         const res = canPlace(g, items[0], this.me);
@@ -1255,11 +1266,9 @@ class OverrideRuntime implements GameRuntime {
         this.ctx.beep('score');
         return;
       }
-      if (gap > 1.2 * IN || at.d > ALIGN) this.ctx.toast(why, 'bad');
-      else {
-        this.ctx.toast(why, 'bad');
-        return; // seated but not allowed: keep holding
-      }
+      // Over a Goal but not right: keep hold of it (a driver wouldn't open the claw) and say why.
+      this.ctx.toast(why, 'bad');
+      return;
     }
     // Drop it where the claw is (a stack stays together).
     const r = this.ctx.robot;
@@ -1538,7 +1547,7 @@ class OverrideRuntime implements GameRuntime {
       let tip = this.held.length ? 'line up over a Goal' : 'lower to grab';
       if (g) {
         const gap = (this.unitBottom() - this.stackTop(g.goal)) / IN;
-        tip = g.d > ALIGN ? `${((g.d - ALIGN) / IN).toFixed(1)}″ off ${g.goal.id}` : gap > 1.2 ? `lower ${gap.toFixed(1)}″ onto ${g.goal.id}` : `seated on ${g.goal.id}: release!`;
+        tip = g.d > ALIGN ? `${((g.d - ALIGN) / IN).toFixed(1)}″ off ${g.goal.id}` : gap > SEAT_DROP / IN ? `lower ${(gap - SEAT_DROP / IN).toFixed(1)}″ onto ${g.goal.id}` : `over ${g.goal.id}: release!`;
       }
       claw = `<div class="row"><span class="lbl">Claw</span><b>${h.toFixed(1)}″</b> <span class="hint">${tip}</span></div>`;
     }
@@ -1613,7 +1622,7 @@ class OverrideRuntime implements GameRuntime {
     if (near) {
       this.alignRing.position.set(near.goal.x, this.stackTop(near.goal) + 0.004, near.goal.z);
       const ok = near.d <= ALIGN;
-      const seated = ok && this.unitBottom() - this.stackTop(near.goal) < 1.2 * IN;
+      const seated = ok && this.unitBottom() - this.stackTop(near.goal) < SEAT_DROP;
       (this.alignRing.material as THREE.MeshBasicMaterial).color.setHex(seated ? 0x3ddc84 : ok ? 0x9be15d : 0xffb02e);
     }
     const glow = this.midfieldGlow.material as THREE.MeshBasicMaterial;
