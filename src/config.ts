@@ -33,6 +33,8 @@ export interface Settings {
   sound: boolean;
   quality: 'high' | 'low';
   countdown: boolean;
+  /** Beginner aid: one button lifts and places on the Goal in front. Off = drive the lift yourself. */
+  assist: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -50,6 +52,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sound: true,
   quality: 'high',
   countdown: true,
+  assist: false,
 };
 
 const KEY = 'vexsim.settings.v2';

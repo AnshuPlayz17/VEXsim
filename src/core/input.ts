@@ -20,6 +20,10 @@ export interface ControlState {
   ry: number;
   intake: boolean;
   outtake: boolean;
+  /** Lift up / down (hold). */
+  liftUp: boolean;
+  liftDown: boolean;
+  /** Placement assist only: auto-place on the Goal in front. */
   score: boolean;
   slow: boolean;
   actions: Set<Action>;
@@ -93,11 +97,10 @@ export class Input {
     const kA = this.axisKeys(['KeyA'], ['KeyD']);
     // Keys are all-or-nothing, so turning is softened to stay controllable.
     const kTurn = KEY_TURN_SCALE * this.axisKeys(['ArrowLeft', 'KeyQ', 'KeyJ'], ['ArrowRight', 'KeyE', 'KeyL']);
-    const kUpDown = this.axisKeys(['ArrowDown', 'KeyK'], ['ArrowUp', 'KeyI']);
     let lx = kA;
     let ly = kW;
     let rx = kTurn;
-    let ry = kUpDown;
+    let ry = 0;
     // Keyboards can't do two-stick tank, so differential drives use arcade-style keys:
     // W/S throttle, A/D (or arrows) turn. The drive model still converts that into
     // left/right wheel speeds, so the robot behaves like the real drivetrain.
@@ -117,6 +120,8 @@ export class Input {
     let intake = this.key('Space');
     let outtake = this.key('KeyV');
     let score = this.key('KeyF', 'Enter');
+    let liftUp = this.key('ArrowUp', 'KeyI');
+    let liftDown = this.key('ArrowDown', 'KeyK');
     let slow = this.key('ShiftLeft', 'ShiftRight');
 
     let usingGamepad = false;
@@ -147,6 +152,8 @@ export class Input {
       intake ||= btn('intake');
       outtake ||= btn('outtake');
       score ||= btn('score');
+      liftUp ||= btn('liftUp');
+      liftDown ||= btn('liftDown');
       slow ||= btn('slow');
       for (const a of ACTIONS) {
         const now = btn(a);
@@ -157,11 +164,11 @@ export class Input {
 
     if (!this.enabled) {
       return {
-        lx: 0, ly: 0, rx: 0, ry: 0, intake: false, outtake: false, score: false, slow: false,
+        lx: 0, ly: 0, rx: 0, ry: 0, intake: false, outtake: false, liftUp: false, liftDown: false, score: false, slow: false,
         actions: new Set([...actions].filter((a) => a === 'pause')), usingGamepad, gamepadName, vexController, needsMapping,
       };
     }
-    return { lx, ly, rx, ry, intake, outtake, score, slow, actions, usingGamepad, gamepadName, vexController, needsMapping };
+    return { lx, ly, rx, ry, intake, outtake, liftUp, liftDown, score, slow, actions, usingGamepad, gamepadName, vexController, needsMapping };
   }
 }
 
@@ -179,14 +186,15 @@ export const CONTROL_HELP: { action: string; keyboard: string; gamepad: string; 
   { action: 'Drive (tank/arcade: W/S throttle, A/D turn; X-drive: A/D strafe)', keyboard: 'W A S D', gamepad: 'Left stick', v5: 'Left joystick (Axis 3/4)' },
   { action: 'Turn / rotate', keyboard: '← → (or Q E)', gamepad: 'Right stick', v5: 'Right joystick (Axis 1/2)' },
   { action: 'Tank drive', keyboard: 'arcade-style on keys', gamepad: 'Left Y / Right Y', v5: 'Axis 3 / Axis 2' },
-  { action: 'Intake (hold)', keyboard: 'Space', gamepad: 'RT', v5: 'R1' },
-  { action: 'Outtake (hold)', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
-  { action: 'Place on a Goal', keyboard: 'F', gamepad: 'RB', v5: 'L1' },
-  { action: 'Precision mode (hold)', keyboard: 'Shift', gamepad: 'LB', v5: 'L2' },
-  { action: 'Flip the next Cup (which Pin half it hides)', keyboard: 'R', gamepad: 'A', v5: 'A' },
-  { action: 'Descore the top of a Goal', keyboard: 'G', gamepad: 'X', v5: 'X' },
+  { action: 'Lift up (hold)', keyboard: '↑ or I', gamepad: 'RB', v5: 'L1' },
+  { action: 'Lift down (hold)', keyboard: '↓ or K', gamepad: 'LB', v5: 'L2' },
+  { action: 'Intake / close claw (hold). Lift down to grab off the floor, at the top of a stack to descore', keyboard: 'Space', gamepad: 'RT', v5: 'R1' },
+  { action: 'Release / open claw. Over a Goal at the right height it scores; anywhere else it drops', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
+  { action: 'Flip the wrist (which Pin half or Cup side goes down)', keyboard: 'R', gamepad: 'A', v5: 'A' },
+  { action: 'Precision drive (hold)', keyboard: 'Shift', gamepad: 'X', v5: 'X' },
   { action: 'Match Load at your Loader', keyboard: 'B', gamepad: 'B', v5: 'B' },
   { action: 'Cycle camera', keyboard: 'C', gamepad: 'Y', v5: 'Y' },
+  { action: 'Placement assist only: auto-place / descore', keyboard: 'F / G', gamepad: 'LT near a Goal / D-pad ↓', v5: 'R2 near a Goal' },
   { action: 'Field-oriented on/off', keyboard: 'O', gamepad: 'R3', v5: 'Up' },
   { action: 'Ghost of best run on/off', keyboard: 'Y', gamepad: 'D-pad ←', v5: 'Down' },
   { action: 'Restart', keyboard: 'Backspace', gamepad: 'Back', v5: 'Left' },

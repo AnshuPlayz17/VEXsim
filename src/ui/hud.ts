@@ -11,12 +11,12 @@ export type Device = 'keyboard' | 'gamepad' | 'v5';
 /** The few controls a driver needs mid-match, per input device. */
 const QUICK: { what: string; keyboard: string; gamepad: string; v5: string }[] = [
   { what: 'Drive', keyboard: 'W A S D', gamepad: 'Sticks', v5: 'Joysticks' },
+  { what: 'Lift ↑/↓', keyboard: '↑ ↓', gamepad: 'RB / LB', v5: 'L1 / L2' },
   { what: 'Intake', keyboard: 'Space', gamepad: 'RT', v5: 'R1' },
-  { what: 'Place on Goal', keyboard: 'F', gamepad: 'RB', v5: 'L1' },
-  { what: 'Drop', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
-  { what: 'Flip Cup', keyboard: 'R', gamepad: 'A', v5: 'A' },
+  { what: 'Release', keyboard: 'V', gamepad: 'LT', v5: 'R2' },
+  { what: 'Flip wrist', keyboard: 'R', gamepad: 'A', v5: 'A' },
   { what: 'Match Load', keyboard: 'B', gamepad: 'B', v5: 'B' },
-  { what: 'Precision', keyboard: 'Shift', gamepad: 'LB', v5: 'L2' },
+  { what: 'Precision', keyboard: 'Shift', gamepad: 'X', v5: 'X' },
   { what: 'Camera', keyboard: 'C', gamepad: 'Y', v5: 'Y' },
   { what: 'Pause', keyboard: 'Esc', gamepad: 'Start', v5: 'Right' },
 ];

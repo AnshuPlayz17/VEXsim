@@ -7,7 +7,7 @@ import type { Action } from './input';
  * non-standard axis and button numbering, so it gets mapped once with the
  * Controller setup screen and the mapping is saved per device.
  */
-export type HoldBinding = 'intake' | 'outtake' | 'score' | 'slow';
+export type HoldBinding = 'intake' | 'outtake' | 'liftUp' | 'liftDown' | 'score' | 'slow';
 export type Binding = HoldBinding | Action;
 
 export interface AxisRef {
@@ -28,8 +28,8 @@ const STD = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START
 export const STANDARD_PROFILE: PadProfile = {
   sticks: { lx: { index: 0, invert: false }, ly: { index: 1, invert: true }, rx: { index: 2, invert: false }, ry: { index: 3, invert: true } },
   buttons: {
-    intake: STD.RT, outtake: STD.LT, score: STD.RB, slow: STD.LB,
-    flip: STD.A, descore: STD.X, feed: STD.B, camera: STD.Y,
+    intake: STD.RT, outtake: STD.LT, liftUp: STD.RB, liftDown: STD.LB, slow: STD.X,
+    flip: STD.A, descore: STD.DOWN, feed: STD.B, camera: STD.Y,
     fieldToggle: STD.RS, pause: STD.START, restart: STD.BACK, ghost: STD.LEFT,
   },
   custom: false,
@@ -47,8 +47,8 @@ export function isVexController(pad: Gamepad): boolean {
 export const V5_GUESS: PadProfile = {
   sticks: { rx: { index: 0, invert: false }, ry: { index: 1, invert: true }, ly: { index: 2, invert: true }, lx: { index: 3, invert: false } },
   buttons: {
-    score: 4, slow: 5, intake: 6, outtake: 7,
-    flip: 0, feed: 1, descore: 2, camera: 3,
+    liftUp: 4, liftDown: 5, intake: 6, outtake: 7,
+    flip: 0, feed: 1, slow: 2, camera: 3,
     fieldToggle: 8, ghost: 9, restart: 10, pause: 11,
   },
   custom: false,
@@ -66,7 +66,17 @@ function loadAll(): Record<string, PadProfile> {
 
 export function profileFor(pad: Gamepad): PadProfile {
   const saved = loadAll()[pad.id];
-  if (saved) return saved;
+  if (saved) {
+    // Profiles mapped before the manual lift existed: L1/L2 were place/precision.
+    if (saved.buttons.liftUp === undefined && saved.buttons.score !== undefined) {
+      saved.buttons.liftUp = saved.buttons.score;
+      saved.buttons.liftDown = saved.buttons.slow;
+      saved.buttons.slow = saved.buttons.descore;
+      delete saved.buttons.score;
+      delete saved.buttons.descore;
+    }
+    return saved;
+  }
   if (isVexController(pad)) return V5_GUESS;
   return pad.mapping === 'standard' ? STANDARD_PROFILE : { ...STANDARD_PROFILE, custom: false };
 }
@@ -114,12 +124,12 @@ export const MAP_STEPS: { id: 'lx' | 'ly' | 'rx' | 'ry' | Binding; prompt: strin
   { id: 'lx', prompt: 'Push the LEFT joystick RIGHT (Axis 4)', kind: 'axis' },
   { id: 'ry', prompt: 'Push the RIGHT joystick UP (Axis 2)', kind: 'axis' },
   { id: 'rx', prompt: 'Push the RIGHT joystick RIGHT (Axis 1)', kind: 'axis' },
-  { id: 'intake', prompt: 'Press the button for INTAKE (V5: R1)', kind: 'button' },
-  { id: 'outtake', prompt: 'Press the button for OUTTAKE (V5: R2)', kind: 'button' },
-  { id: 'score', prompt: 'Press the button to PLACE on a Goal (V5: L1)', kind: 'button' },
-  { id: 'slow', prompt: 'Press the button for PRECISION mode (V5: L2)', kind: 'button' },
-  { id: 'flip', prompt: 'Press the button to FLIP the next Cup (V5: A)', kind: 'button' },
-  { id: 'descore', prompt: 'Press the button to DESCORE (V5: X)', kind: 'button' },
+  { id: 'intake', prompt: 'Press the button for INTAKE / close claw (V5: R1)', kind: 'button' },
+  { id: 'outtake', prompt: 'Press the button to RELEASE / open claw (V5: R2)', kind: 'button' },
+  { id: 'liftUp', prompt: 'Press the button for LIFT UP (V5: L1)', kind: 'button' },
+  { id: 'liftDown', prompt: 'Press the button for LIFT DOWN (V5: L2)', kind: 'button' },
+  { id: 'flip', prompt: 'Press the button to FLIP the wrist (V5: A)', kind: 'button' },
+  { id: 'slow', prompt: 'Press the button for PRECISION drive (V5: X)', kind: 'button' },
   { id: 'feed', prompt: 'Press the button for MATCH LOAD (V5: B)', kind: 'button' },
   { id: 'camera', prompt: 'Press the button to switch CAMERA (V5: Y)', kind: 'button' },
   { id: 'fieldToggle', prompt: 'Press the button for FIELD-ORIENTED on/off (V5: Up)', kind: 'button' },

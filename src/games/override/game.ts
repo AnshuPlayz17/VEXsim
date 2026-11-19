@@ -119,12 +119,34 @@ const CUP_WAIST_R = 2.32 * IN / 2;
 // slides over a Pin and rests on its collar; the next Pin's tip sits at the Cup's waist.
 const NEST_PIN_IN_GOAL = PIN_TIP_LEN;
 const CUP_ON_PIN = PIN_LEN / 2 + 0.32 * IN; // Cup base above the Pin's base (top of collar)
-const PIN_IN_CUP = CUP_H / 2; // next Pin's base above the Cup's base (the waist)
+// next Pin's base above the Cup's base: its tip sits in the waist, collar on the top rim.
+const PIN_IN_CUP = CUP_H / 2 + 0.12 * IN;
+/** A Pin standing in a Cup: its center above the Cup's center. */
+const PIN_OVER_CUP = PIN_IN_CUP - CUP_H / 2 + PIN_LEN / 2;
 const COLORS: Record<PinColor, number> = { red: 0xbf2a1f, blue: 0x1f3fc7, yellow: 0xebbd19 };
 const CSS: Record<PinColor, string> = { red: '#e04040', blue: '#3b6ff0', yellow: '#f2c518' };
 
 // ----------------------------------------------------------------- robots
 const PRESETS: RobotConfig[] = [
+  {
+    // From the team's regionals code (19109M-Regionals-26-27, src/main.cpp): 4 blue motors
+    // geared 36:48 to 450 rpm on 3.25" omnis, split arcade, coast in driver control, 12.75"
+    // track, 10.5" wheelbase, 15.5" x 17.8" frame; a 3-motor cascade; a pneumatic claw plate
+    // on a swinging arm that scores out the back; grabs Cup + Pin stacks; R1 grabs and lifts
+    // to mid height, holding R2 lowers onto the Goal and letting go releases.
+    id: 'team-19109m',
+    name: '19109M (regionals)',
+    description: 'UTS Middle School: 4-motor 450 RPM omni drive, a 3-motor cascade and a pneumatic claw on a swing arm that scores off the back. Grabs a Cup with its Pin as one stack. R1 grabs and lifts to mid height; hold R2 to lower onto the Goal, let go to release.',
+    team: '19109M',
+    source: 'Team 19109M’s regionals robot code (drive, cascade, claw and driver macros). Weight, cascade height and claw reach are estimates.',
+    length: 17.8 * IN, width: 15.5 * IN, height: 14 * IN,
+    drive: 'splitArcade',
+    power: { motors: 4, cartridge: 'blue', wheelRpm: 450, wheelDia: 3.25 * IN, mass: 15 * LB, mu: 0.75, trackWidth: 12.75 * IN, wheelbase: 10.5 * IN, scrub: 0.1, brake: 'coast' },
+    capacity: 2, intakeWidth: 0.16, intakeReach: 0.12, liftTime: 0.85,
+    reversed: true, grabsStacks: true, macros: 'lower-release',
+    stats: { Lift: '3-motor cascade to ~33"', Claw: 'Pneumatic plate, scores off the back', Holds: 'Cup + Pin stack' },
+    model: vexModel({ team: '19109M', length: 17.8, width: 15.5, drive: 'tank4', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 33, rollers: false, accent: 0x1d3f8f }),
+  },
   {
     id: 'vex-dr4b',
     name: 'DR4B claw stacker',
@@ -218,6 +240,9 @@ interface ToggleViz {
   touched: boolean;
 }
 
+/** How close (m) the claw must be to a Goal's center for a Pin to drop into its hole: 1.4". */
+const ALIGN = 1.4 * IN;
+
 type LoadItem = 'cup' | 'yy' | Alliance;
 
 type PlaceJob = { goal: Goal; piece: Piece; t: number; duration: number; height: number };
@@ -296,13 +321,18 @@ function goalMarkerTexture(): THREE.Texture {
   return markerTex;
 }
 
-/** Lower half of the Pin's side profile (r, y), local origin at the Pin's center. */
+/**
+ * Lower half of the Pin's side profile (r, y), local origin at the Pin's center: a flat end
+ * with a small chamfer, the 0.64" straight tip, the taper out to the collar, then the collar
+ * with a shallow groove where the two molded halves meet.
+ */
 function pinHalfProfile(): [number, number][] {
   const b = -PIN_LEN / 2;
+  const ch = 0.08 * IN;
   const collarIn = PIN_R * 0.95;
   return [
-    [0, b], [PIN_TIP_R, b], [PIN_TIP_R, b + PIN_TIP_LEN], [collarIn, b + PIN_TAPER_END],
-    [PIN_R, b + PIN_TAPER_END + 0.04 * IN], [PIN_R, 0], [0, 0],
+    [0, b], [PIN_TIP_R - ch, b], [PIN_TIP_R, b + ch], [PIN_TIP_R, b + PIN_TIP_LEN], [collarIn, b + PIN_TAPER_END],
+    [PIN_R, b + PIN_TAPER_END + 0.06 * IN], [PIN_R, -0.1 * IN], [PIN_R * 0.965, -0.05 * IN], [PIN_R * 0.965, 0], [0, 0],
   ];
 }
 
@@ -331,12 +361,22 @@ class OverrideRuntime implements GameRuntime {
   private intakeCooldown = 0;
   private dropCooldown = 0;
   private prevScore = false;
+  private prevOut = false;
+  private prevIntake = false;
+  /** A lift height a macro is driving to (null: hold where it is). */
+  private liftGoal: number | null = null;
+  /** 19109M R2 release: the height to go back to after letting go. */
+  private releaseFrom: number | null = null;
+  /** Holding a Cup with its Pin standing in it, as one unit. */
+  private heldStack = false;
   private job: PlaceJob | null = null;
   private wristTarget = 0;
   private autoBonus: Alliance | 'tie' | null = null;
   private loaderQueue: Record<Alliance, LoadItem[]>;
   private placedByMe = 0;
   private midfieldGlow!: THREE.Mesh;
+  /** Ring on the Goal under the claw: green when lined up to score. */
+  private alignRing!: THREE.Mesh;
   private readonly me: Alliance;
   private geo: { pinLow: THREE.BufferGeometry; pinHigh: THREE.BufferGeometry; cupLow: THREE.BufferGeometry; cupHigh: THREE.BufferGeometry };
   private mats: { pin: Record<PinColor, THREE.Material>; cupOpaque: THREE.Material; cupClear: THREE.Material };
@@ -347,21 +387,55 @@ class OverrideRuntime implements GameRuntime {
     this.builder = new FieldBuilder(ctx.world, ctx.scene);
     // Shared geometry: symmetric hexagonal Pins (two colored halves), straight-tapered Cups.
     const half = pinHalfProfile().map(([r, y]) => new THREE.Vector2(r, y));
-    const pinLow = new THREE.LatheGeometry(half, 6);
-    const pinHigh = pinLow.clone().scale(1, -1, 1);
-    if (pinHigh.index) pinHigh.setIndex(Array.from(pinHigh.index.array).reverse());
-    pinHigh.computeVertexNormals();
+    // Hexagonal: six flat faces, so the lathe is split into facets with their own normals.
+    const pinLow = new THREE.LatheGeometry(half, 6, Math.PI / 6).toNonIndexed();
     pinLow.computeVertexNormals();
+    const pinHigh = pinLow.clone().scale(1, -1, 1);
+    const pos = pinHigh.getAttribute('position');
+    for (let i = 0; i < pos.count; i += 3) {
+      // Mirroring flips the winding: swap two corners of every triangle.
+      for (let k = 0; k < 3; k++) {
+        const t = pos.getComponent(i + 1, k);
+        pos.setComponent(i + 1, k, pos.getComponent(i + 2, k));
+        pos.setComponent(i + 2, k, t);
+      }
+    }
+    const uv = pinHigh.getAttribute('uv');
+    for (let i = 0; i < uv.count; i += 3) {
+      for (let k = 0; k < 2; k++) {
+        const t = uv.getComponent(i + 1, k);
+        uv.setComponent(i + 1, k, uv.getComponent(i + 2, k));
+        uv.setComponent(i + 2, k, t);
+      }
+    }
+    pinHigh.computeVertexNormals();
     const c = CUP_H;
     const cupProfile = (pts: [number, number][]) => pts.map(([r, y]) => new THREE.Vector2(r, y - c / 2));
-    // Clear lower half: base lip, flaring in to the waist. Opaque upper half: waist out to the top lip.
-    const cupLow = new THREE.LatheGeometry(cupProfile([[CUP_TOP_R * 0.98, 0], [CUP_TOP_R * 0.98, 0.006], [CUP_TOP_R * 0.93, 0.008], [CUP_WAIST_R, c / 2]]), 28);
-    const cupHigh = new THREE.LatheGeometry(cupProfile([[CUP_WAIST_R, c / 2], [CUP_TOP_R * 0.95, c - 0.008], [CUP_TOP_R, c - 0.005], [CUP_TOP_R, c]]), 28);
+    // Hollow hourglass with a 0.06" wall. Clear lower half: a rolled base rim tapering in to
+    // the waist. Opaque upper half: from the waist out to a rolled top rim. Each half is drawn
+    // as a closed shell (outside up, over the rim, inside back down).
+    const w = 0.06 * IN;
+    const rim = 0.05 * IN;
+    const shell = (outer: [number, number][]) => {
+      const inner = outer.map(([r, y]) => [Math.max(0.001, r - w), y] as [number, number]).reverse();
+      return cupProfile([...outer, ...inner, outer[0]]);
+    };
+    const R = CUP_TOP_R;
+    const cupLow = new THREE.LatheGeometry(
+      shell([[R - rim, 0], [R, 0.02 * IN], [R, 0.16 * IN], [R - rim * 1.4, 0.24 * IN], [CUP_WAIST_R + 0.02 * IN, c / 2 - 0.12 * IN], [CUP_WAIST_R, c / 2]]),
+      40,
+    );
+    const cupHigh = new THREE.LatheGeometry(
+      shell([[CUP_WAIST_R, c / 2], [CUP_WAIST_R + 0.03 * IN, c / 2 + 0.12 * IN], [R - rim * 1.6, c - 0.3 * IN], [R, c - 0.18 * IN], [R, c - 0.03 * IN], [R - rim, c]]),
+      40,
+    );
+    cupLow.computeVertexNormals();
+    cupHigh.computeVertexNormals();
     this.geo = { pinLow, pinHigh, cupLow, cupHigh };
     // Molded plastic: Pins have a fine textured (sand-blasted) finish, Cups a gray
     // opaque half and a glossy clear half.
     const grain = grainTexture();
-    const plastic = (color: number) => new THREE.MeshStandardMaterial({ color, roughness: 0.72, bumpMap: grain, bumpScale: 0.35 });
+    const plastic = (color: number) => new THREE.MeshStandardMaterial({ color, roughness: 0.72, bumpMap: grain, bumpScale: 0.35, flatShading: true });
     this.mats = {
       pin: { red: plastic(COLORS.red), blue: plastic(COLORS.blue), yellow: plastic(COLORS.yellow) },
       cupOpaque: new THREE.MeshStandardMaterial({ color: 0x4b4f55, roughness: 0.6, bumpMap: grain, bumpScale: 0.2, side: THREE.DoubleSide }),
@@ -610,6 +684,14 @@ class OverrideRuntime implements GameRuntime {
       new THREE.RingGeometry(0.09, 0.115, 8),
       new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0, side: THREE.DoubleSide }),
     );
+    this.alignRing = new THREE.Mesh(
+      new THREE.RingGeometry(GOAL_TOP_FLATS * 0.42, GOAL_TOP_FLATS * 0.55, 32),
+      new THREE.MeshBasicMaterial({ color: 0x3ddc84, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthTest: false }),
+    );
+    this.alignRing.rotation.x = -Math.PI / 2;
+    this.alignRing.renderOrder = 5;
+    this.alignRing.visible = false;
+    b.group.add(this.alignRing);
     this.midfieldGlow.rotation.x = -Math.PI / 2;
     this.midfieldGlow.position.y = 0.004;
     b.group.add(this.midfieldGlow);
@@ -753,7 +835,7 @@ class OverrideRuntime implements GameRuntime {
         this.makePin(p.x, PIN_R + 0.001, p.z, p.colors, q);
       } else if (p.pose === 'inCup') {
         const cup = cups[p.cup!];
-        const pin = this.makePin(p.x, CUP_H / 2 + PIN_LEN / 2, p.z, p.colors);
+        const pin = this.makePin(p.x, CUP_H / 2 + PIN_OVER_CUP, p.z, p.colors);
         pin.nestedIn = cup;
         pin.body.setEnabled(false);
       } else {
@@ -774,7 +856,7 @@ class OverrideRuntime implements GameRuntime {
         this.unnest(p);
         continue;
       }
-      p.body.setTranslation({ x: t.x, y: t.y + PIN_LEN / 2, z: t.z }, false);
+      p.body.setTranslation({ x: t.x, y: t.y + PIN_OVER_CUP, z: t.z }, false);
     }
   }
 
@@ -794,6 +876,7 @@ class OverrideRuntime implements GameRuntime {
   }
 
   private release(p: Piece, x: number, y: number, z: number, vx = 0, vz = 0): void {
+    this.heldStack = false;
     p.state = 'loose';
     p.body.setEnabled(true);
     p.body.setTranslation({ x, y, z }, true);
@@ -855,74 +938,8 @@ class OverrideRuntime implements GameRuntime {
     this.dropCooldown -= dt;
     anim.intake = enabled && ctl.intake ? 1 : enabled && ctl.outtake ? -1 : 0;
     this.updateNested();
-
-    // Placement in progress: lift rises, wrist orients, claw opens at the end.
-    let liftTarget = this.held.length ? range[0] + 0.12 : range[0] + 0.02;
-    if (this.job) {
-      const j = this.job;
-      j.t += dt;
-      liftTarget = j.height + 0.06;
-      if (j.t >= j.duration) this.finishPlace(j);
-    }
-    if (enabled && ctl.intake && !this.job) liftTarget = range[0];
-    anim.lift += THREE.MathUtils.clamp(liftTarget - anim.lift, -liftRate * dt, liftRate * dt);
-    anim.claw += THREE.MathUtils.clamp((this.held.length && !(this.job && this.job.t > this.job.duration - 0.2) ? 1 : 0.15) - anim.claw, -6 * dt, 6 * dt);
-    anim.wrist += THREE.MathUtils.clamp(this.wristTarget - anim.wrist, -9 * dt, 9 * dt);
-    // Current for the battery model: a moving lift, the intake, and holding a load up.
-    const liftMoving = Math.abs(liftTarget - anim.lift) > 0.01;
-    robot.mechAmps = (liftMoving ? 2.2 : this.held.length ? 0.6 : 0.2) + (anim.intake !== 0 ? 1.2 : 0);
-
-    // Intake rollers pull nearby elements toward the mouth before they're grabbed.
-    if (enabled && ctl.intake && !this.job && this.held.length < robot.cfg.capacity) {
-      const front = robot.cfg.length / 2;
-      for (const p of this.pieces) {
-        if (p.state !== 'loose' || p.nestedIn || this.held.some((h) => h.kind === p.kind)) continue;
-        const t = p.body.translation();
-        const [f, side] = robot.toLocal(t.x, t.z);
-        const reach = robot.cfg.intakeReach + 0.1;
-        if (f < front - 0.05 || f > front + reach || Math.abs(side) > robot.cfg.intakeWidth / 2 + 0.06 || t.y > 0.3) continue;
-        // Roller contact: drag toward the center of the mouth and back toward the robot.
-        const [mx, mz] = robot.toWorld(front, 0);
-        const dx = mx - t.x;
-        const dz = mz - t.z;
-        const d = Math.hypot(dx, dz) || 1;
-        const pull = 0.9;
-        const v = p.body.linvel();
-        const tx = robot.cmd.vx + (dx / d) * pull;
-        const tz = robot.cmd.vz + (dz / d) * pull;
-        const k = Math.min(1, 12 * dt);
-        p.body.setLinvel({ x: v.x + (tx - v.x) * k, y: v.y, z: v.z + (tz - v.z) * k }, true);
-      }
-    }
-
-    // Intake: grab the element that has reached the claw / rollers.
-    if (enabled && ctl.intake && !this.job && this.held.length < robot.cfg.capacity && this.intakeCooldown <= 0) {
-      for (const p of this.pieces) {
-        if (p.state !== 'loose') continue;
-        const t = p.body.translation();
-        // SG6: a robot may hold at most one Pin and one Cup.
-        if (this.held.some((h) => h.kind === p.kind)) continue;
-        // Grabbed once it is right at the mouth (the rollers pulled it in).
-        const [f] = robot.toLocal(t.x, t.z);
-        if (robot.inIntake(t.x, t.z, t.y, 0.3) && f < robot.cfg.length / 2 + Math.max(robot.cfg.intakeReach * 0.6, 0.1)) {
-          this.hold(p);
-          this.intakeCooldown = 0.35;
-          this.ctx.intook();
-          break;
-        }
-      }
-    }
-
-    if (enabled && ctl.outtake && this.held.length && this.dropCooldown <= 0 && !this.job) {
-      const p = this.held[this.held.length - 1];
-      const [x, z] = robot.toWorld(robot.cfg.length / 2 + 0.1, 0);
-      const [fx, fz] = [Math.cos(robot.heading), -Math.sin(robot.heading)];
-      this.release(p, x, (p.kind === 'pin' ? PIN_LEN : CUP_H) / 2 + 0.02, z, robot.cmd.vx + fx * 0.3, robot.cmd.vz + fz * 0.3);
-      this.dropCooldown = 0.4;
-    }
-
-    if (enabled && ctl.score && !this.prevScore) this.startPlace();
-    this.prevScore = ctl.score;
+    if (this.ctx.settings.assist) this.updateAssisted(dt, ctl, range, liftRate);
+    else this.updateManual(dt, ctl, range, liftRate);
 
     // Toggles: a robot pushing a Toggle rotates it to its alliance face.
     for (const tv of this.toggles) {
@@ -936,6 +953,262 @@ class OverrideRuntime implements GameRuntime {
       const target = tv.owner === null ? 0 : tv.owner === tv.side ? (2 * Math.PI) / 3 : (-2 * Math.PI) / 3;
       tv.angle += THREE.MathUtils.clamp(target - tv.angle, -8 * dt, 8 * dt);
     }
+  }
+
+  /** Beginner mode: the lift runs itself and one button places on the Goal in front. */
+  private updateAssisted(dt: number, ctl: ControlState, range: [number, number], liftRate: number): void {
+    const robot = this.ctx.robot;
+    const enabled = this.ctx.clock.enabled;
+    const anim = robot.anim;
+    let liftTarget = this.held.length ? range[0] + 0.12 : range[0] + 0.02;
+    if (this.job) {
+      const j = this.job;
+      j.t += dt;
+      liftTarget = j.height + 0.06;
+      if (j.t >= j.duration) this.finishPlace(j);
+    }
+    if (enabled && ctl.intake && !this.job) liftTarget = range[0];
+    anim.lift += THREE.MathUtils.clamp(liftTarget - anim.lift, -liftRate * dt, liftRate * dt);
+    anim.claw += THREE.MathUtils.clamp((this.held.length && !(this.job && this.job.t > this.job.duration - 0.2) ? 1 : 0.15) - anim.claw, -6 * dt, 6 * dt);
+    anim.wrist += THREE.MathUtils.clamp(this.wristTarget - anim.wrist, -9 * dt, 9 * dt);
+    const liftMoving = Math.abs(liftTarget - anim.lift) > 0.01;
+    robot.mechAmps = (liftMoving ? 2.2 : this.held.length ? 0.6 : 0.2) + (anim.intake !== 0 ? 1.2 : 0);
+    if (enabled && ctl.intake && !this.job) this.grabFromFloor(dt);
+    const outEdge = ctl.outtake && !this.prevOut;
+    this.prevOut = ctl.outtake;
+    if (enabled && outEdge && this.held.length && !this.job && this.goalInFront()) this.startPlace();
+    else if (enabled && ctl.outtake && this.held.length && this.dropCooldown <= 0 && !this.job) {
+      const p = this.held[this.held.length - 1];
+      const [x, z] = robot.toWorld(robot.cfg.length / 2 + 0.1, 0);
+      const [fx, fz] = [Math.cos(robot.heading), -Math.sin(robot.heading)];
+      this.release(p, x, (p.kind === 'pin' ? PIN_LEN : CUP_H) / 2 + 0.02, z, robot.cmd.vx + fx * 0.3, robot.cmd.vz + fz * 0.3);
+      this.dropCooldown = 0.4;
+    }
+    if (enabled && ctl.score && !this.prevScore) this.startPlace();
+    this.prevScore = ctl.score;
+  }
+
+  /**
+   * Real driving: the driver runs the lift, closes the claw low to grab (or at the top of a
+   * stack to descore), lines the claw up over a Goal and opens it. A held element rests on
+   * the Goal instead of going through it, and only counts if it's seated on the stack.
+   * Robots with team macros (19109M) lift to mid height after a grab, and lower while R2 is
+   * held, letting go when it's released.
+   */
+  private updateManual(dt: number, ctl: ControlState, range: [number, number], liftRate: number): void {
+    const robot = this.ctx.robot;
+    const enabled = this.ctx.clock.enabled;
+    const anim = robot.anim;
+    const macros = robot.cfg.macros === 'lower-release';
+    const dir = enabled ? (ctl.liftUp ? 1 : 0) - (ctl.liftDown ? 1 : 0) : 0;
+    if (dir !== 0) {
+      this.liftGoal = null; // the driver takes over from any macro
+      this.releaseFrom = null;
+    }
+    let target = anim.lift;
+    if (dir !== 0) target = dir > 0 ? range[1] : range[0];
+    else if (this.liftGoal !== null) target = this.liftGoal;
+    if (macros && enabled && ctl.outtake && this.held.length) {
+      // R2 held: lower onto the Goal.
+      if (this.releaseFrom === null) this.releaseFrom = anim.lift;
+      this.liftGoal = null;
+      target = range[0];
+    }
+    const before = anim.lift;
+    if (enabled) anim.lift += THREE.MathUtils.clamp(target - anim.lift, -liftRate * dt, liftRate * dt);
+    // What's in the claw can't pass through a Goal: it rests on the stack (or hits the rim).
+    const seat = this.held.length ? this.goalUnderClaw(0.09) : null;
+    if (seat) {
+      const gap = this.unitBottom() - this.stackTop(seat.goal);
+      if (gap < 0) anim.lift -= gap;
+    }
+    anim.lift = THREE.MathUtils.clamp(anim.lift, range[0], range[1]);
+    const moving = Math.abs(anim.lift - before) > 1e-5;
+    anim.claw += THREE.MathUtils.clamp((this.held.length ? 1 : 0.15) - anim.claw, -8 * dt, 8 * dt);
+    anim.wrist += THREE.MathUtils.clamp(this.wristTarget - anim.wrist, -9 * dt, 9 * dt);
+    robot.mechAmps = (moving ? 2.2 : this.held.length ? 0.6 : 0.2) + (anim.intake !== 0 ? 1.2 : 0);
+
+    // Grab: low for the floor, at the top of a stack to descore.
+    const intakeEdge = ctl.intake && !this.prevIntake;
+    this.prevIntake = ctl.intake;
+    if (enabled && ctl.intake) {
+      const low = anim.lift <= range[0] + 0.05;
+      const had = this.held.length;
+      if (low) this.grabFromFloor(dt);
+      else if (intakeEdge) this.grabFromStack();
+      if (macros && this.held.length > had) {
+        // R1: close, then lift to mid height (CASCADE_MIDDLE is ~66% of the cascade's travel).
+        this.liftGoal = range[0] + (range[1] - range[0]) * 0.66;
+      } else if (macros && intakeEdge && had && this.liftGoal !== null && this.liftGoal < range[1]) {
+        this.liftGoal = range[1]; // R1 again while lifting: to the top
+      }
+    }
+
+    // Release.
+    const outEdge = ctl.outtake && !this.prevOut;
+    const outLetGo = !ctl.outtake && this.prevOut;
+    this.prevOut = ctl.outtake;
+    if (enabled && this.held.length) {
+      if (macros && outLetGo) {
+        this.releaseAtClaw();
+        if (this.releaseFrom !== null) this.liftGoal = this.releaseFrom; // back up to where it was
+        this.releaseFrom = null;
+      } else if (!macros && outEdge) this.releaseAtClaw();
+    }
+  }
+
+  /** Rollers pull nearby elements in; the claw grabs one that reaches it (a Cup with its Pin for stack grabbers). */
+  private grabFromFloor(dt: number): void {
+    const robot = this.ctx.robot;
+    if (this.held.length >= robot.cfg.capacity) return;
+    const front = robot.cfg.length / 2;
+    for (const p of this.pieces) {
+      if (p.state !== 'loose' || p.nestedIn || this.held.some((h) => h.kind === p.kind)) continue;
+      const t = p.body.translation();
+      const [f, side] = robot.toLocal(t.x, t.z);
+      const reach = robot.cfg.intakeReach + 0.1;
+      if (f < front - 0.05 || f > front + reach || Math.abs(side) > robot.cfg.intakeWidth / 2 + 0.06 || t.y > 0.3) continue;
+      const [mx, mz] = robot.toWorld(front, 0);
+      const dx = mx - t.x;
+      const dz = mz - t.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const v = p.body.linvel();
+      const tx = robot.cmd.vx + (dx / d) * 0.9;
+      const tz = robot.cmd.vz + (dz / d) * 0.9;
+      const k = Math.min(1, 12 * dt);
+      p.body.setLinvel({ x: v.x + (tx - v.x) * k, y: v.y, z: v.z + (tz - v.z) * k }, true);
+    }
+    if (this.intakeCooldown > 0) return;
+    for (const p of this.pieces) {
+      if (p.state !== 'loose') continue;
+      // SG6: a robot may hold at most one Pin and one Cup.
+      if (this.held.some((h) => h.kind === p.kind)) continue;
+      const t = p.body.translation();
+      const [f] = robot.toLocal(t.x, t.z);
+      if (!(robot.inIntake(t.x, t.z, t.y, 0.3) && f < front + Math.max(robot.cfg.intakeReach * 0.6, 0.1))) continue;
+      const rider = p.kind === 'cup' ? this.pieces.find((q) => q.nestedIn === p) : undefined;
+      if (rider && robot.cfg.grabsStacks && this.held.length === 0) {
+        // Close on the Cup with its Pin standing in it, as one stack.
+        this.hold(p);
+        this.hold(rider);
+        this.heldStack = true;
+      } else if (p.nestedIn) {
+        if (!robot.cfg.grabsStacks) this.hold(p); // pluck the Pin out of its Cup
+        else continue;
+      } else this.hold(p);
+      this.intakeCooldown = 0.35;
+      this.ctx.intook();
+      break;
+    }
+  }
+
+  /** Claw closed at the top of a stack: take the top element (descore). */
+  private grabFromStack(): void {
+    const at = this.goalUnderClaw(0.05);
+    if (!at || !at.goal.stack.length || this.held.length >= this.ctx.robot.cfg.capacity) return;
+    const g = at.goal;
+    const top = g.pieces[g.pieces.length - 1];
+    const bases = this.stackBases(g);
+    const center = bases[bases.length - 1] + (top.kind === 'pin' ? PIN_LEN : CUP_H) / 2;
+    if (Math.abs(this.clawWorld().y - center) > 1.5 * IN || this.held.some((h) => h.kind === top.kind)) return;
+    const item = g.stack.pop()!;
+    g.pieces.pop();
+    if (item.type === 'pin') this.placedByMe = Math.max(0, this.placedByMe - 1);
+    this.hold(top);
+    this.ctx.toast('Descored the top of the stack', 'info');
+  }
+
+  /** The pieces that leave the claw together: a held Cup + Pin stack, or the one in the claw. */
+  private clawUnit(): Piece[] {
+    if (this.heldStack && this.held.length >= 2) return [this.held[0], this.held[1]];
+    return this.held.length ? [this.held[0]] : [];
+  }
+
+  /** Bottom of what's in the claw, world height. */
+  private unitBottom(): number {
+    const u = this.clawUnit();
+    if (!u.length) return Infinity;
+    return this.clawWorld().y - (u[0].kind === 'pin' ? PIN_LEN : CUP_H) / 2;
+  }
+
+  /** Claw (carry point) in world coordinates. */
+  private clawWorld(): THREE.Vector3 {
+    const r = this.ctx.robot;
+    const out = new THREE.Vector3();
+    const carry = r.model.carry;
+    if (carry) {
+      carry.updateWorldMatrix(true, false);
+      return carry.getWorldPosition(out);
+    }
+    const [x, z] = r.toWorld(r.cfg.length / 2 + 0.07, 0);
+    return out.set(x, r.mesh.position.y + r.anim.lift, z);
+  }
+
+  /** The Goal whose center is within `within` (m) of the claw, horizontally. */
+  private goalUnderClaw(within: number): { goal: Goal; d: number } | null {
+    const c = this.clawWorld();
+    let best: { goal: Goal; d: number } | null = null;
+    for (const g of this.goals) {
+      const d = Math.hypot(c.x - g.x, c.z - g.z);
+      if (d < within && (!best || d < best.d)) best = { goal: g, d };
+    }
+    return best;
+  }
+
+  /** Open the claw: seat the piece(s) on the Goal under it, or drop them. */
+  private releaseAtClaw(): void {
+    const unit = this.clawUnit();
+    if (!unit.length) return;
+    const c = this.clawWorld();
+    const at = this.goalUnderClaw(0.09);
+    if (at) {
+      const g = at.goal;
+      const gap = this.unitBottom() - this.stackTop(g);
+      const items = unit.map((p) => this.itemFor(p));
+      const want = g.stack[g.stack.length - 1]?.type === 'pin' ? 'cup' : 'pin';
+      let why = '';
+      if (at.d > ALIGN) why = `Not lined up: the claw is ${((at.d - ALIGN) / IN).toFixed(1)}″ off the Goal’s center`;
+      else if (gap > 1.2 * IN) why = `Too high: lower ${(gap / IN).toFixed(1)}″ more before letting go`;
+      else if (items[0].type !== want) why = want === 'cup' ? 'This Pin needs a Cup on it before the next Pin' : 'Goals take a Pin here, not a Cup';
+      else {
+        const res = canPlace(g, items[0], this.me);
+        if (!res.ok) why = res.reason;
+      }
+      if (!why) {
+        this.held = this.held.filter((h) => !unit.includes(h));
+        this.heldStack = false;
+        unit.forEach((p, i) => {
+          if (i > 0 && !canPlace(g, items[i], this.me).ok) {
+            this.release(p, g.x, this.stackTop(g) + PIN_LEN, g.z);
+            return;
+          }
+          this.placeOn(g, p, items[i]);
+          if (items[i].type === 'pin') this.placedByMe++;
+        });
+        const pins = items.filter((it) => it.type === 'pin').length;
+        const halves = visibleHalves(g).slice(-2).join(' + ');
+        this.ctx.toast(pins ? `Scored: ${halves} showing on ${g.id}` : `Cup seated on ${g.id}`, 'good');
+        if (pins) this.ctx.scored(pins);
+        this.ctx.beep('score');
+        return;
+      }
+      if (gap > 1.2 * IN || at.d > ALIGN) this.ctx.toast(why, 'bad');
+      else {
+        this.ctx.toast(why, 'bad');
+        return; // seated but not allowed: keep holding
+      }
+    }
+    // Drop it where the claw is (a stack stays together).
+    const r = this.ctx.robot;
+    this.held = this.held.filter((h) => !unit.includes(h));
+    const [base, rider] = unit;
+    this.release(base, c.x, c.y, c.z, r.cmd.vx, r.cmd.vz);
+    if (rider) {
+      this.release(rider, c.x, c.y + PIN_OVER_CUP, c.z, r.cmd.vx, r.cmd.vz);
+      rider.nestedIn = base;
+      rider.body.setEnabled(false);
+    }
+    this.heldStack = false;
   }
 
   private robotTouchesToggle(tv: ToggleViz): boolean {
@@ -1097,6 +1370,18 @@ class OverrideRuntime implements GameRuntime {
       this.ctx.toast('Robot is full', 'bad');
       return;
     }
+    if (r.cfg.grabsStacks && q[0] === 'cup' && q[1] && q[1] !== 'cup' && this.held.length === 0) {
+      // A person drops a Cup with a Pin in it into the open claw.
+      q.shift();
+      const pinKind = q.shift()!;
+      const cup = this.makeCup(r.x, 0.3, r.z);
+      const pin = this.makePin(r.x, 0.4, r.z, pinKind === 'yy' ? ['yellow', 'yellow'] : [pinKind as Alliance, 'yellow']);
+      this.hold(cup);
+      this.hold(pin);
+      this.heldStack = true;
+      this.ctx.toast(`Match Load: Cup + ${pinKind === 'yy' ? 'yellow/yellow' : `${pinKind}/yellow`} Pin stack (${q.length} left)`, 'info');
+      return;
+    }
     const nextKind = q[0] === 'cup' ? 'cup' : 'pin';
     if (this.held.some((h) => h.kind === nextKind)) {
       this.ctx.toast(`SG6: you can only hold one ${nextKind === 'cup' ? 'Cup' : 'Pin'} at a time`, 'bad');
@@ -1165,7 +1450,18 @@ class OverrideRuntime implements GameRuntime {
     };
     const mid = this.robotInMidfield();
     const loads = this.loaderQueue[this.me].length;
-    return `
+    let claw = '';
+    if (!this.ctx.settings.assist) {
+      const h = this.clawWorld().y / IN;
+      const g = this.held.length ? this.goalUnderClaw(0.25) : null;
+      let tip = this.held.length ? 'line up over a Goal' : 'lower to grab';
+      if (g) {
+        const gap = (this.unitBottom() - this.stackTop(g.goal)) / IN;
+        tip = g.d > ALIGN ? `${((g.d - ALIGN) / IN).toFixed(1)}″ off ${g.goal.id}` : gap > 1.2 ? `lower ${gap.toFixed(1)}″ onto ${g.goal.id}` : `seated on ${g.goal.id}: release!`;
+      }
+      claw = `<div class="row"><span class="lbl">Claw</span><b>${h.toFixed(1)}″</b> <span class="hint">${tip}</span></div>`;
+    }
+    return `${claw}
       <div class="row"><span class="lbl">Toggles</span>${this.toggles.map(chip).join('')}</div>
       <div class="row"><span class="lbl">Next Cup</span><b>${this.cupOpaqueUp ? 'opaque up' : 'opaque DOWN'}</b> <span class="hint">R / A to flip</span></div>
       <div class="row"><span class="lbl">Midfield</span><b style="color:${mid ? 'var(--good)' : 'var(--muted)'}">${mid ? 'IN (+8, owns center yellows)' : 'out'}</b></div>
@@ -1205,6 +1501,15 @@ class OverrideRuntime implements GameRuntime {
     // First held element in the claw, the rest riding on the robot.
     const carry = r.model.carry;
     this.held.forEach((p, i) => {
+      if (i === 1 && this.heldStack) {
+        // The Pin standing in the held Cup.
+        const cup = this.held[0].mesh;
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cup.quaternion);
+        if (up.y < 0) up.negate();
+        p.mesh.position.copy(cup.position).addScaledVector(up, PIN_OVER_CUP);
+        p.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+        return;
+      }
       if (i === 0 && carry) {
         carry.updateWorldMatrix(true, false);
         const pos = new THREE.Vector3();
@@ -1222,6 +1527,14 @@ class OverrideRuntime implements GameRuntime {
       }
     });
     for (const tv of this.toggles) tv.group.rotation.x = tv.angle;
+    const near = !this.ctx.settings.assist && this.held.length ? this.goalUnderClaw(0.25) : null;
+    this.alignRing.visible = !!near;
+    if (near) {
+      this.alignRing.position.set(near.goal.x, this.stackTop(near.goal) + 0.004, near.goal.z);
+      const ok = near.d <= ALIGN;
+      const seated = ok && this.unitBottom() - this.stackTop(near.goal) < 1.2 * IN;
+      (this.alignRing.material as THREE.MeshBasicMaterial).color.setHex(seated ? 0x3ddc84 : ok ? 0x9be15d : 0xffb02e);
+    }
     const glow = this.midfieldGlow.material as THREE.MeshBasicMaterial;
     glow.opacity = this.robotInMidfield() ? 0.7 + Math.sin(performance.now() / 150) * 0.25 : 0;
   }

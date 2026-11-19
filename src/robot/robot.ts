@@ -45,6 +45,12 @@ export interface RobotConfig {
   model: ModelBuilder;
   /** Short stat lines for the setup screen. */
   stats?: Record<string, string>;
+  /** The claw is on the back: the sim's "front" is the claw side and the driver's forward is the other way. */
+  reversed?: boolean;
+  /** Closes on a Cup with a Pin standing in it and carries them as one stack. */
+  grabsStacks?: boolean;
+  /** Team driver macros. 'lower-release': grabbing lifts to mid height; hold R2 to lower, let go to release. */
+  macros?: 'lower-release';
 }
 
 /**
@@ -169,6 +175,8 @@ export class Robot {
     this.voltages = active
       ? driverVoltages(this.cfg.drive, input, this.heading, driverYaw, tuning)
       : this.cfg.drive === 'xdrive' ? [0, 0, 0, 0] : [0, 0];
+    // Driving a robot whose claw is on the back: the driver's forward is away from the claw.
+    if (this.cfg.reversed && this.voltages.length === 2) this.voltages = [-this.voltages[1], -this.voltages[0]];
     const supply: Supply = { voltage: supplyScale(this.power), limit: thermalLimit(this.power.temp) };
     const prev = this.cmd;
     this.cmd = stepDrive(this.cfg.drive, this.cfg.power, this.cfg.length, this.cfg.width, this.cmd, this.voltages, this.heading, dt, supply);

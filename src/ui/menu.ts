@@ -224,6 +224,7 @@ export class Ui {
                 ${check('fieldOriented', 'Field-oriented (X-drive)')}
                 ${check('showGhost', 'Race my best-run ghost')}
                 ${check('countdown', '3-2-1 countdown')}
+                ${check('assist', 'Placement assist (one button lifts and places)')}
                 ${check('sound', 'Sound')}
               </div>
               ${sel('quality', 'Graphics', [['high', 'High (shadows)'], ['low', 'Fast']], s.quality)}
@@ -547,7 +548,8 @@ export class Ui {
           <h3>Tips</h3>
           <ul>
             <li>Practice from the <b>Driver station</b> camera. It's what you'll see at competition. Use the chase cam to learn a route, then switch back.</li>
-            <li>Hold <kbd>Shift</kbd> / <kbd>LB</kbd> / <kbd>L2</kbd> for precision mode when lining up on a Goal.</li>
+            <li>Drive the lift yourself like a real robot: <kbd>L1</kbd>/<kbd>L2</kbd> (or <kbd>↑</kbd>/<kbd>↓</kbd>) raise and lower it. Lower it to grab off the floor with <kbd>R1</kbd>, then raise it, line the claw up over a Goal (the ring turns green) and open it with <kbd>R2</kbd>.</li>
+            <li>Hold <kbd>Shift</kbd> / <kbd>X</kbd> for precision driving when lining up on a Goal.</li>
             <li>Turn on <b>Race my best-run ghost</b>: a translucent copy of your best run drives alongside you.</li>
             <li><b>Use your real V5 Controller:</b> plug it into the computer with a micro-USB cable, press any button, then turn it <i>off</i> (like VEX's Virtual Skills), and use Chrome. Then open <b>Controller setup</b> once to map its joysticks and buttons.</li>
           </ul>
