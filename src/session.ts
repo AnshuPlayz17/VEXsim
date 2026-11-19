@@ -139,7 +139,7 @@ export class Session {
   }
 
   private buildEnvironment(): void {
-    this.scoreboard = buildVenue(this.scene, this.game.fieldX / 2, this.settings.quality);
+    this.scoreboard = buildVenue(this.scene, this.game.fieldX / 2, this.settings.quality === 'low' ? 'low' : 'high');
   }
 
   private spawnGhost(): void {

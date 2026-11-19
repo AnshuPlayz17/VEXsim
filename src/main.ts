@@ -26,7 +26,7 @@ class App implements UiHost {
   private showingResults = false;
   private starting = false;
   private last = performance.now();
-  /** High quality: ambient occlusion (contact shadows under pieces, in Goal corners). */
+  /** Ultra quality: ambient occlusion (contact shadows under pieces, in Goal corners). */
   private composer: EffectComposer | null = null;
 
   constructor() {
@@ -54,7 +54,8 @@ class App implements UiHost {
   private resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const ratio = this.settings.quality === 'high' ? Math.min(window.devicePixelRatio, 2) : 1;
+    const q = this.settings.quality;
+    const ratio = q === 'ultra' ? Math.min(window.devicePixelRatio, 2) : q === 'high' ? Math.min(window.devicePixelRatio, 1.5) : 1;
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h);
     this.session?.rig.resize(w, h);
@@ -64,7 +65,7 @@ class App implements UiHost {
   private buildComposer(s: Session): void {
     this.composer?.dispose();
     this.composer = null;
-    if (this.settings.quality !== 'high') return;
+    if (this.settings.quality !== 'ultra') return;
     const w = window.innerWidth;
     const h = window.innerHeight;
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -106,7 +107,7 @@ class App implements UiHost {
       const mode = this.settings.mode[game.id];
       const station = game.stations.find((st) => st.id === this.settings.station[game.id]) ?? game.stations[0];
       const cfg = robotFor(game, this.settings);
-      this.renderer.shadowMap.enabled = this.settings.quality === 'high';
+      this.renderer.shadowMap.enabled = this.settings.quality !== 'low';
       this.resize();
       const session = new Session(
         game,
@@ -126,6 +127,7 @@ class App implements UiHost {
       this.session = session;
       this.buildComposer(session);
       (window as unknown as { __vexsim: Session }).__vexsim = session;
+      (window as unknown as { __vexrenderer: THREE.WebGLRenderer }).__vexrenderer = this.renderer;
       this.hud.show(true);
       this.hud.showHelp(false);
     } catch (err) {

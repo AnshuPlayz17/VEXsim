@@ -29,7 +29,7 @@ export function robotThumb(cfg: RobotConfig, alliance: 'red' | 'blue'): string {
     scene.add(sun);
     const model = cfg.model(alliance, false);
     const range = model.liftRange ?? [0.05, 0.5];
-    model.animate({ intake: 0, lift: range[0] + (range[1] - range[0]) * 0.35, claw: 1, wrist: 0, wheelSpin: 0 }, 0);
+    model.animate({ intake: 0, lift: range[0] + (range[1] - range[0]) * 0.35, claw: 1, wrist: 0, wheelSpin: 0, swing: 0 }, 0);
     scene.add(model.root);
     const box = new THREE.Box3().setFromObject(model.root);
     const center = box.getCenter(new THREE.Vector3());

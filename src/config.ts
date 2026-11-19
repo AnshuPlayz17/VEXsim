@@ -31,7 +31,8 @@ export interface Settings {
   camera: CameraMode;
   showGhost: boolean;
   sound: boolean;
-  quality: 'high' | 'low';
+  /** ultra: + ambient occlusion and full-res on HiDPI; high: shadows; low: no shadows, 1× pixels. */
+  quality: 'ultra' | 'high' | 'low';
   countdown: boolean;
   /** Beginner aid: one button lifts and places on the Goal in front. Off = drive the lift yourself. */
   assist: boolean;

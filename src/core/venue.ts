@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeStatic } from './merge';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /**
@@ -196,6 +197,7 @@ export function buildVenue(scene: THREE.Scene, fieldHalf: number, quality: 'high
   root.add(frame);
 
   let last = '';
+  mergeStatic(root);
   return {
     update({ time, phase, red, blue, title }) {
       const key = `${time}|${phase}|${red}|${blue}|${title}`;

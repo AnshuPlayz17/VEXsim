@@ -5,6 +5,7 @@ import {
   tractionWheel, v5Battery, v5Brain, v5Motor,
 } from './parts';
 import type { ModelBuilder, RobotAnim, RobotModel } from './types';
+import { mergeStatic } from '../../core/merge';
 
 /**
  * VEX V5 robots built from V5 parts: aluminum C-channel, 11W smart motors,
@@ -28,10 +29,19 @@ export interface VexSpec {
   metal?: number;
   /** Team accent color (polycarbonate / 3D-printed parts). */
   accent: number;
+  /**
+   * Claw on a motor-driven arm at the top of the lift that swings it over the robot:
+   * out past the frame to score, in over the top to load. Arm length (in) and swing (deg).
+   */
+  swingArm?: { length: number; swingDeg: number };
 }
 
 export function vexModel(spec: VexSpec): ModelBuilder {
-  return (alliance, ghost) => buildVex(spec, alliance, makeCtx(ghost));
+  return (alliance, ghost) => {
+    const m = buildVex(spec, alliance, makeCtx(ghost));
+    mergeStatic(m.root);
+    return m;
+  };
 }
 
 function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotModel {
@@ -60,6 +70,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       pod.rotation.y = (sx * sz > 0 ? 1 : -1) * Math.PI / 4;
       root.add(pod);
       const w = omniWheel(ctx, pod, wheelD, 1.1 * IN, 0, axleY, 0);
+      w.userData.dynamic = true;
       wheels.push(w);
       v5Motor(ctx, pod, 0, axleY + 0.3 * IN, -1.7 * IN * sz, s.cartridge, sz);
       motorAt.push(new THREE.Vector3(sx * c * 0.8, axleY + 1.2 * IN, sz * c * 0.8));
@@ -78,7 +89,8 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
         const w = traction
           ? tractionWheel(ctx, root, wheelD, 1 * IN, fx, axleY, zr - side * 1.1 * IN)
           : omniWheel(ctx, root, wheelD, 1 * IN, fx, axleY, zr - side * 1.1 * IN);
-        wheels.push(w);
+        w.userData.dynamic = true;
+      wheels.push(w);
         v5Motor(ctx, root, fx, axleY + 0.35 * IN, zr - side * 3.6 * IN, s.cartridge, side);
         motorAt.push(new THREE.Vector3(fx, axleY + 1.5 * IN, zr - side * 3.6 * IN));
         nut(ctx, root, fx, axleY, side * (W / 2 + 0.1 * IN));
@@ -134,6 +146,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       }
       // Cross brace at the top of each stage.
       bar(ctx, st, [0.5 * IN, 0.5 * IN, 2 * (towerZ - k * 0.6 * IN)], [towerX + k * 0.55 * IN, stageH - 0.3 * IN, 0], metal);
+      st.userData.dynamic = true;
       cascade.push(st);
     }
     for (const side of [-1, 1]) v5Motor(ctx, root, towerX - 1.5 * IN, railY + 2 * IN, side * (towerZ - 1.6 * IN), 'red', -side);
@@ -149,6 +162,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
   }
 
   const effector = new THREE.Group(); // carries the claw; kept level
+  effector.userData.dynamic = true;
   root.add(effector);
   const arms: { g: THREE.Group; kind: 'stage1' | 'stage2' | 'arm' }[] = [];
   const stageLen = s.lift === 'dr4b' ? dr4bStage : 0;
@@ -167,11 +181,13 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
     }
     // Cross brace with accent rubber-band anchor.
     mesh(ctx, new THREE.BoxGeometry(0.4 * IN, 0.4 * IN, towerZ * 2), accent, g, len * 0.6, 0.7 * IN, 0);
+    g.userData.dynamic = true;
     arms.push({ g, kind });
     return g;
   };
   // DR4B carriage: horizontal rails from the top of the lift out over the front.
   const carriage = new THREE.Group();
+  carriage.userData.dynamic = true;
   root.add(carriage);
   if (s.lift === 'dr4b' || s.lift === 'cascade') {
     for (const side of [-1, 1]) cChannel(ctx, carriage, L / 2 - towerX, (L / 2 - towerX) / 2, 0, side * (towerZ - 0.8 * IN), { color: metal });
@@ -185,11 +201,29 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
 
   // Claw on a wrist (rotates to flip Pins/Cups), plus optional front rollers.
   const wristG = new THREE.Group();
-  effector.add(wristG);
+  wristG.userData.dynamic = true;
+  // Optional swinging arm: effector → arm (rotates about the pivot) → a level carrier → wrist.
+  const sw = s.swingArm;
+  const swLen = sw ? sw.length * IN : 0;
+  const effX = L / 2 - 1 * IN - swLen;
+  const swingG = new THREE.Group();
+  const levelG = new THREE.Group();
+  swingG.userData.dynamic = levelG.userData.dynamic = true;
+  if (sw) {
+    effector.add(swingG);
+    swingG.add(levelG);
+    levelG.position.x = swLen;
+    levelG.add(wristG);
+    for (const side of [-1, 1]) cChannel(ctx, swingG, swLen + 1 * IN, swLen / 2, 0, side * 2.3 * IN, { color: metal, w: 0.5 * IN, h: 0.5 * IN });
+    // Red-cartridge arm motor at the pivot, and the claw's pneumatic cylinder.
+    v5Motor(ctx, effector, 0, 0, -3.2 * IN, 'red', 1);
+    mesh(ctx, new THREE.CylinderGeometry(0.45 * IN, 0.45 * IN, 3.2 * IN, 12), mat(ctx, 0xc9ced6, { metal: 0.8, rough: 0.3 }), levelG, -1.6 * IN, 1.6 * IN, 0).rotation.z = Math.PI / 2;
+  } else effector.add(wristG);
   bar(ctx, wristG, [1 * IN, 3 * IN, 4.2 * IN], [0.6 * IN, 0, 0], 0x1d1f23, { metal: 0.2, rough: 0.6 });
   const fingers: THREE.Mesh[] = [];
   for (const side of [-1, 1]) {
     const f = mesh(ctx, new THREE.BoxGeometry(3.6 * IN, 2.6 * IN, 0.35 * IN), accent, wristG, 2.6 * IN, 0, side * 1.8 * IN);
+    f.userData.dynamic = true;
     fingers.push(f);
   }
   v5Motor(ctx, wristG, -0.6 * IN, 0, 0, 'green', 1).scale.setScalar(0.8);
@@ -204,11 +238,13 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
     }
     rollerMeshes.push(roller(ctx, root, 2.6 * IN, W - 6 * IN, L / 2 + 2.2 * IN, 1.5 * IN, 0, 0x2fae4f));
     rollerMeshes.push(roller(ctx, root, 2 * IN, W - 6 * IN, L / 2 + 1.2 * IN, 4 * IN, 0, 0x2fae4f));
+    for (const r of rollerMeshes) r.userData.dynamic = true;
   }
 
   // Rubber bands from the tower to the first stage / arm (lift assist).
   const bands: THREE.Mesh[] = [];
   if (s.lift !== 'cascade') for (let i = 0; i < 2; i++) bands.push(rubberBand(ctx, root, new THREE.Vector3(), new THREE.Vector3(0, 0.01, 0)));
+  for (const b of bands) b.userData.dynamic = true;
   const bandTo = (m: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3) => {
     const len = Math.max(0.001, a.distanceTo(b));
     m.position.copy(a).add(b).multiplyScalar(0.5);
@@ -235,7 +271,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       s2.g.rotation.z = Math.PI - t;
       ey = pivotY + 2 * Math.sin(t) * stageLen;
       carriage.position.set(towerX, ey, 0);
-      effector.position.set(L / 2 - 1 * IN, ey, 0);
+      effector.position.set(effX, ey, 0);
       bands.forEach((b, i) => {
         const z = (i === 0 ? -1 : 1) * towerZ;
         bandTo(b, new THREE.Vector3(towerX, pivotY + 4 * IN, z), new THREE.Vector3(towerX + Math.cos(t) * stageLen * 0.4, pivotY + Math.sin(t) * stageLen * 0.4, z));
@@ -247,7 +283,7 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
       cascade.forEach((st, k) => (st.position.y = railY + (extend * k) / cascadeStages));
       ey = h;
       carriage.position.set(towerX, ey, 0);
-      effector.position.set(L / 2 - 1 * IN, ey, 0);
+      effector.position.set(effX, ey, 0);
     } else {
       const sinP = THREE.MathUtils.clamp((h - pivotY) / armLen, -0.98, 0.98);
       const p = Math.asin(sinP);
@@ -262,13 +298,18 @@ function buildVex(s: VexSpec, alliance: 'red' | 'blue', ctx: ModelCtx): RobotMod
         bandTo(b, new THREE.Vector3(towerX - 1 * IN, pivotY + 3 * IN, z), new THREE.Vector3(towerX + Math.cos(p) * armLen * 0.35, pivotY + Math.sin(p) * armLen * 0.35, z));
       });
     }
+    if (sw) {
+      const ang = THREE.MathUtils.clamp(a.swing, 0, 1) * THREE.MathUtils.degToRad(sw.swingDeg);
+      swingG.rotation.z = ang; // up and over the top toward the front
+      levelG.rotation.z = -ang; // the claw stays level as it swings
+    }
     wristG.rotation.x = a.wrist;
     const open = 1 - THREE.MathUtils.clamp(a.claw, 0, 1);
     fingers.forEach((f, i) => (f.position.z = (i === 0 ? -1 : 1) * (1.0 + open * 1.4) * IN));
     for (const r of rollerMeshes) r.rotation.y += a.intake * 0.5;
     for (const w of wheels) w.rotation.z = -a.wheelSpin;
   };
-  animate({ intake: 0, lift: liftMin, claw: 1, wrist: 0, wheelSpin: 0 });
+  animate({ intake: 0, lift: liftMin, claw: 1, wrist: 0, wheelSpin: 0, swing: 0 });
 
-  return { root, animate, carry, liftRange: [liftMin, liftMax] };
+  return { root, animate, carry, liftRange: [liftMin, liftMax], swingArm: !!sw };
 }

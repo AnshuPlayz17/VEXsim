@@ -12,10 +12,12 @@ export interface RobotAnim {
   wrist: number;
   /** Accumulated wheel rotation, rad. */
   wheelSpin: number;
+  /** Swinging claw arm: 0 out (claw past the frame, scoring), 1 swung in over the top (loading). */
+  swing: number;
 }
 
 export const defaultAnim = (): RobotAnim => ({
-  intake: 0, lift: 0, claw: 1, wrist: 0, wheelSpin: 0,
+  intake: 0, lift: 0, claw: 1, wrist: 0, wheelSpin: 0, swing: 0,
 });
 
 export interface RobotModel {
@@ -25,6 +27,8 @@ export interface RobotModel {
   carry?: THREE.Object3D;
   /** Lowest and highest end-effector heights the lift can reach, m. */
   liftRange?: [number, number];
+  /** The claw is on a swinging arm (anim.swing moves it). */
+  swingArm?: boolean;
 }
 
 export type ModelBuilder = (alliance: 'red' | 'blue', ghost: boolean) => RobotModel;

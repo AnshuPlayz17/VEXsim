@@ -3,6 +3,8 @@ import { RAPIER, PIECE_GROUPS, FIELD_GROUPS } from '../../core/physics';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { FieldBuilder, canvasTexture } from '../../core/builder';
 import { IN } from '../../core/units';
+import { mergeStatic } from '../../core/merge';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const LB = 0.4536;
 import type { Phase } from '../../core/match';
@@ -136,7 +138,7 @@ const PRESETS: RobotConfig[] = [
     // to mid height, holding R2 lowers onto the Goal and letting go releases.
     id: 'team-19109m',
     name: '19109M (regionals)',
-    description: 'UTS Middle School: 4-motor 450 RPM omni drive, a 3-motor cascade and a pneumatic claw on a swing arm that scores off the back. Grabs a Cup with its Pin as one stack. R1 grabs and lifts to mid height; hold R2 to lower onto the Goal, let go to release.',
+    description: 'UTS Middle School: 4-motor 450 RPM omni drive, a 3-motor cascade and a pneumatic claw on a swing arm that scores off the back. Grabs a Cup with its Pin as one stack. R1 grabs and lifts to mid height; hold R2 to lower onto the Goal, let go to release. At a Loader, B is its L1 loading macro: cascade down, the claw arm swings in over the top, the load drops in, then R1 lifts and swings it back out.',
     team: '19109M',
     source: 'Team 19109M’s regionals robot code (drive, cascade, claw and driver macros). Weight, cascade height and claw reach are estimates.',
     length: 17.8 * IN, width: 15.5 * IN, height: 14 * IN,
@@ -145,7 +147,7 @@ const PRESETS: RobotConfig[] = [
     capacity: 2, intakeWidth: 0.16, intakeReach: 0.12, liftTime: 0.85,
     reversed: true, grabsStacks: true, macros: 'lower-release',
     stats: { Lift: '3-motor cascade to ~33"', Claw: 'Pneumatic plate, scores off the back', Holds: 'Cup + Pin stack' },
-    model: vexModel({ team: '19109M', length: 17.8, width: 15.5, drive: 'tank4', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 33, rollers: false, accent: 0x1d3f8f }),
+    model: vexModel({ team: '19109M', length: 17.8, width: 15.5, drive: 'tank4', wheel: 3.25, cartridge: 'blue', lift: 'cascade', liftMin: 3, liftMax: 33, rollers: false, accent: 0x1d3f8f, swingArm: { length: 7.5, swingDeg: 180 } }),
   },
   {
     id: 'vex-dr4b',
@@ -369,6 +371,12 @@ class OverrideRuntime implements GameRuntime {
   private releaseFrom: number | null = null;
   /** Holding a Cup with its Pin standing in it, as one unit. */
   private heldStack = false;
+  /** Swinging claw arm: where it's going (0 out, 1 in). */
+  private swingTarget = 0;
+  /** Swing the arm back out once the lift passes this height (19109M: B_ARM_OUT_HEIGHT). */
+  private swingOutAt: number | null = null;
+  /** Seconds until a Match Load drops into the claw once the arm is in (null: none coming). */
+  private loadPending: number | null = null;
   private job: PlaceJob | null = null;
   private wristTarget = 0;
   private autoBonus: Alliance | 'tie' | null = null;
@@ -379,7 +387,7 @@ class OverrideRuntime implements GameRuntime {
   private alignRing!: THREE.Mesh;
   private readonly me: Alliance;
   private geo: { pinLow: THREE.BufferGeometry; pinHigh: THREE.BufferGeometry; cupLow: THREE.BufferGeometry; cupHigh: THREE.BufferGeometry };
-  private mats: { pin: Record<PinColor, THREE.Material>; cupOpaque: THREE.Material; cupClear: THREE.Material };
+  private mats: { pin: Record<PinColor, THREE.Material>; pinBody: THREE.Material; cupOpaque: THREE.Material; cupClear: THREE.Material };
   private pinHull = pinHullPoints();
 
   constructor(private ctx: GameContext) {
@@ -423,11 +431,11 @@ class OverrideRuntime implements GameRuntime {
     const R = CUP_TOP_R;
     const cupLow = new THREE.LatheGeometry(
       shell([[R - rim, 0], [R, 0.02 * IN], [R, 0.16 * IN], [R - rim * 1.4, 0.24 * IN], [CUP_WAIST_R + 0.02 * IN, c / 2 - 0.12 * IN], [CUP_WAIST_R, c / 2]]),
-      40,
+      24,
     );
     const cupHigh = new THREE.LatheGeometry(
       shell([[CUP_WAIST_R, c / 2], [CUP_WAIST_R + 0.03 * IN, c / 2 + 0.12 * IN], [R - rim * 1.6, c - 0.3 * IN], [R, c - 0.18 * IN], [R, c - 0.03 * IN], [R - rim, c]]),
-      40,
+      24,
     );
     cupLow.computeVertexNormals();
     cupHigh.computeVertexNormals();
@@ -438,6 +446,7 @@ class OverrideRuntime implements GameRuntime {
     const plastic = (color: number) => new THREE.MeshStandardMaterial({ color, roughness: 0.72, bumpMap: grain, bumpScale: 0.35, flatShading: true });
     this.mats = {
       pin: { red: plastic(COLORS.red), blue: plastic(COLORS.blue), yellow: plastic(COLORS.yellow) },
+      pinBody: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.72, bumpMap: grain, bumpScale: 0.35, flatShading: true }),
       cupOpaque: new THREE.MeshStandardMaterial({ color: 0x4b4f55, roughness: 0.6, bumpMap: grain, bumpScale: 0.2, side: THREE.DoubleSide }),
       cupClear: new THREE.MeshPhysicalMaterial({ color: 0xeef5ff, roughness: 0.06, metalness: 0, transparent: true, opacity: 0.3, clearcoat: 1, clearcoatRoughness: 0.05, side: THREE.DoubleSide, depthWrite: false }),
     };
@@ -628,8 +637,8 @@ class OverrideRuntime implements GameRuntime {
     // Goals, from the manual drawings: a chamfered-square footprint; neutral Goals stand a
     // black base with yellow line art under the same 3.25" tapered module the Alliance
     // Goals use, which carries a 2.37" hole and a field code marker on each face.
-    const lineArt = goalLineArtTexture();
-    const marker = goalMarkerTexture();
+    const lineArtMat = new THREE.MeshStandardMaterial({ map: goalLineArtTexture(), transparent: true, roughness: 0.6, depthWrite: false });
+    const markerMat = new THREE.MeshStandardMaterial({ map: goalMarkerTexture(), roughness: 0.7 });
     for (const def of GOALS) {
       const baseH = GOAL_BASE_H[def.kind];
       const color = def.kind === 'alliance' ? COLORS[def.alliance!] : 0x18191b;
@@ -649,7 +658,7 @@ class OverrideRuntime implements GameRuntime {
           const ang = (k * Math.PI) / 2;
           const plane = new THREE.Mesh(
             new THREE.PlaneGeometry(GOAL_CORNER * 0.95, baseH * 0.92),
-            new THREE.MeshStandardMaterial({ map: lineArt, transparent: true, roughness: 0.6, depthWrite: false }),
+            lineArtMat,
           );
           plane.position.set(def.x + Math.cos(ang) * (GOAL_FLATS / 2 + 0.001), baseH / 2, def.z - Math.sin(ang) * (GOAL_FLATS / 2 + 0.001));
           plane.rotation.y = ang + Math.PI / 2;
@@ -665,7 +674,7 @@ class OverrideRuntime implements GameRuntime {
       const flatAt = (GOAL_FLATS / 2) * (taperBottom + (topScale - taperBottom) * ((yM - baseH - GOAL_FLANGE_H) / (GOAL_MODULE_H - GOAL_FLANGE_H)));
       for (let k = 0; k < 4; k++) {
         const ang = (k * Math.PI) / 2;
-        const tag = new THREE.Mesh(new THREE.PlaneGeometry(1.15 * IN, 1.15 * IN), new THREE.MeshStandardMaterial({ map: marker, roughness: 0.7 }));
+        const tag = new THREE.Mesh(new THREE.PlaneGeometry(1.15 * IN, 1.15 * IN), markerMat);
         tag.position.set(def.x + Math.cos(ang) * (flatAt + 0.0015), yM, def.z - Math.sin(ang) * (flatAt + 0.0015));
         tag.rotation.set(0, ang + Math.PI / 2, 0);
         tag.rotateX(-tilt);
@@ -690,9 +699,11 @@ class OverrideRuntime implements GameRuntime {
     );
     this.alignRing.rotation.x = -Math.PI / 2;
     this.alignRing.renderOrder = 5;
+    this.alignRing.userData.dynamic = true;
     this.alignRing.visible = false;
     b.group.add(this.alignRing);
     this.midfieldGlow.rotation.x = -Math.PI / 2;
+    this.midfieldGlow.userData.dynamic = true;
     this.midfieldGlow.position.y = 0.004;
     b.group.add(this.midfieldGlow);
 
@@ -703,6 +714,7 @@ class OverrideRuntime implements GameRuntime {
     for (const def of TOGGLES) {
       const group = new THREE.Group();
       const prism = new THREE.Group();
+      prism.userData.dynamic = true;
       const other: Alliance = def.side === 'red' ? 'blue' : 'red';
       const faces: [PinColor, number][] = [
         ['yellow', Math.PI / 6],
@@ -761,17 +773,17 @@ class OverrideRuntime implements GameRuntime {
       b.box({ center: [cx + sx * (w / 2 - 0.6 * IN), LOADER.bottom - 1.5 * IN, l.z], size: [1.2 * IN, 3 * IN, w * 0.5], material: ally, collider: false });
       b.solid([cx, top / 2, l.z], [LOADER.depth, top, w + 0.6 * IN]);
     }
+    // One draw call per material for everything that doesn't move.
+    mergeStatic(b.group);
   }
 
   // ------------------------------------------------------------- pieces
   private makePin(x: number, y: number, z: number, colors: [PinColor, PinColor], rot?: THREE.Quaternion): Piece {
     const group = new THREE.Group();
-    const low = new THREE.Mesh(this.geo.pinLow, this.mats.pin[colors[0]]);
-    const high = new THREE.Mesh(this.geo.pinHigh, this.mats.pin[colors[1]]);
-    for (const m of [low, high]) {
-      m.castShadow = m.receiveShadow = true;
-      group.add(m);
-    }
+    // One mesh (one draw call) per Pin: both halves in one geometry, colored per vertex.
+    const m = new THREE.Mesh(this.pinGeometry(colors), this.mats.pinBody);
+    m.castShadow = m.receiveShadow = true;
+    group.add(m);
     this.ctx.scene.add(group);
     const body = this.ctx.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
@@ -788,6 +800,30 @@ class OverrideRuntime implements GameRuntime {
     const p: Piece = { id: this.pieces.length, kind: 'pin', colors, body, mesh: group, state: 'loose' };
     this.pieces.push(p);
     return p;
+  }
+
+  private pinGeos = new Map<string, THREE.BufferGeometry>();
+  /** Both Pin halves in one geometry with per-vertex colors, cached per color pair. */
+  private pinGeometry(colors: [PinColor, PinColor]): THREE.BufferGeometry {
+    const key = colors.join('/');
+    const hit = this.pinGeos.get(key);
+    if (hit) return hit;
+    const paint = (g: THREE.BufferGeometry, c: PinColor) => {
+      const col = new THREE.Color(COLORS[c]);
+      const n = g.getAttribute('position').count;
+      const arr = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) col.toArray(arr, i * 3);
+      const out = g.clone();
+      out.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      return out;
+    };
+    const a = paint(this.geo.pinLow, colors[0]);
+    const b = paint(this.geo.pinHigh, colors[1]);
+    const merged = mergeGeometries([a, b], false)!;
+    a.dispose();
+    b.dispose();
+    this.pinGeos.set(key, merged);
+    return merged;
   }
 
   private makeCup(x: number, y: number, z: number, opaqueUp = true): Piece {
@@ -940,6 +976,7 @@ class OverrideRuntime implements GameRuntime {
     this.updateNested();
     if (this.ctx.settings.assist) this.updateAssisted(dt, ctl, range, liftRate);
     else this.updateManual(dt, ctl, range, liftRate);
+    this.updateSwing(dt, range);
 
     // Toggles: a robot pushing a Toggle rotates it to its alliance face.
     for (const tv of this.toggles) {
@@ -952,6 +989,27 @@ class OverrideRuntime implements GameRuntime {
       // Turn the owner's face to where yellow started (up and into the field).
       const target = tv.owner === null ? 0 : tv.owner === tv.side ? (2 * Math.PI) / 3 : (-2 * Math.PI) / 3;
       tv.angle += THREE.MathUtils.clamp(target - tv.angle, -8 * dt, 8 * dt);
+    }
+  }
+
+  /** The swinging claw arm (19109M): about 1.1 s end to end, like its timed swing. */
+  private updateSwing(dt: number, range: [number, number]): void {
+    const robot = this.ctx.robot;
+    if (!robot.model.swingArm) return;
+    const anim = robot.anim;
+    if (this.swingOutAt !== null && anim.lift >= this.swingOutAt - 0.002) {
+      this.swingTarget = 0;
+      this.swingOutAt = null;
+    }
+    const before = anim.swing;
+    anim.swing += THREE.MathUtils.clamp(this.swingTarget - anim.swing, -dt / 1.1, dt / 1.1);
+    if (anim.swing !== before) robot.mechAmps += 1.5;
+    if (this.loadPending !== null && anim.swing > 0.98 && anim.lift <= range[0] + 0.01) {
+      this.loadPending -= dt;
+      if (this.loadPending <= 0) {
+        this.loadPending = null;
+        this.giveStackLoad();
+      }
     }
   }
 
@@ -1034,9 +1092,14 @@ class OverrideRuntime implements GameRuntime {
     if (enabled && ctl.intake) {
       const low = anim.lift <= range[0] + 0.05;
       const had = this.held.length;
-      if (low) this.grabFromFloor(dt);
-      else if (intakeEdge) this.grabFromStack();
-      if (macros && this.held.length > had) {
+      const armIn = !!robot.model.swingArm && anim.swing > 0.5;
+      if (low && !armIn) this.grabFromFloor(dt);
+      else if (intakeEdge && !armIn) this.grabFromStack();
+      if (macros && intakeEdge && had && armIn) {
+        // R1 after loading: lift to mid height; the arm swings out on the way (past ~30% of the travel).
+        this.liftGoal = range[0] + (range[1] - range[0]) * 0.66;
+        this.swingOutAt = range[0] + (range[1] - range[0]) * 0.305;
+      } else if (macros && this.held.length > had) {
         // R1: close, then lift to mid height (CASCADE_MIDDLE is ~66% of the cascade's travel).
         this.liftGoal = range[0] + (range[1] - range[0]) * 0.66;
       } else if (macros && intakeEdge && had && this.liftGoal !== null && this.liftGoal < range[1]) {
@@ -1354,6 +1417,21 @@ class OverrideRuntime implements GameRuntime {
     }
   }
 
+  /** A person drops a Cup with a Pin in it into the open claw. */
+  private giveStackLoad(): void {
+    const r = this.ctx.robot;
+    const q = this.loaderQueue[this.me];
+    if (q[0] !== 'cup' || !q[1] || q[1] === 'cup' || this.held.length) return;
+    q.shift();
+    const pinKind = q.shift()!;
+    const cup = this.makeCup(r.x, 0.3, r.z);
+    const pin = this.makePin(r.x, 0.4, r.z, pinKind === 'yy' ? ['yellow', 'yellow'] : [pinKind as Alliance, 'yellow']);
+    this.hold(cup);
+    this.hold(pin);
+    this.heldStack = true;
+    this.ctx.toast(`Match Load: Cup + ${pinKind === 'yy' ? 'yellow/yellow' : `${pinKind}/yellow`} Pin stack (${q.length} left)`, 'info');
+  }
+
   private matchLoad(): void {
     const r = this.ctx.robot;
     const near = LOADERS.filter((l) => l.alliance === this.me).some((l) => Math.hypot(r.x - l.x, r.z - l.z) < 0.6);
@@ -1370,16 +1448,19 @@ class OverrideRuntime implements GameRuntime {
       this.ctx.toast('Robot is full', 'bad');
       return;
     }
+    if (r.cfg.grabsStacks && r.model.swingArm && q[0] === 'cup' && q[1] && q[1] !== 'cup' && this.held.length === 0) {
+      // 19109M's L1: cascade down, the arm swings in over the top and the claw opens; a person
+      // drops the load in (its MATCH_LOAD_TIME is 0.8 s).
+      if (this.loadPending !== null) return;
+      this.liftGoal = (r.model.liftRange ?? [0.05, 0.6])[0];
+      this.swingTarget = 1;
+      this.swingOutAt = null;
+      this.loadPending = 0.8;
+      this.ctx.toast('Loading position: cascade down, arm swinging in. Press R1 once it’s loaded.', 'info');
+      return;
+    }
     if (r.cfg.grabsStacks && q[0] === 'cup' && q[1] && q[1] !== 'cup' && this.held.length === 0) {
-      // A person drops a Cup with a Pin in it into the open claw.
-      q.shift();
-      const pinKind = q.shift()!;
-      const cup = this.makeCup(r.x, 0.3, r.z);
-      const pin = this.makePin(r.x, 0.4, r.z, pinKind === 'yy' ? ['yellow', 'yellow'] : [pinKind as Alliance, 'yellow']);
-      this.hold(cup);
-      this.hold(pin);
-      this.heldStack = true;
-      this.ctx.toast(`Match Load: Cup + ${pinKind === 'yy' ? 'yellow/yellow' : `${pinKind}/yellow`} Pin stack (${q.length} left)`, 'info');
+      this.giveStackLoad();
       return;
     }
     const nextKind = q[0] === 'cup' ? 'cup' : 'pin';
@@ -1575,6 +1656,8 @@ class OverrideRuntime implements GameRuntime {
   dispose(): void {
     for (const g of Object.values(this.geo)) g.dispose();
     for (const m of Object.values(this.mats.pin)) m.dispose();
+    this.mats.pinBody.dispose();
+    for (const g of this.pinGeos.values()) g.dispose();
     this.mats.cupClear.dispose();
     this.mats.cupOpaque.dispose();
   }

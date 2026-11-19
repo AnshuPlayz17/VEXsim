@@ -227,7 +227,7 @@ export class Ui {
                 ${check('assist', 'Placement assist (one button lifts and places)')}
                 ${check('sound', 'Sound')}
               </div>
-              ${sel('quality', 'Graphics', [['high', 'High (shadows)'], ['low', 'Fast']], s.quality)}
+              ${sel('quality', 'Graphics', [['ultra', 'Ultra (shadows + ambient occlusion)'], ['high', 'High (shadows)'], ['low', 'Fast']], s.quality)}
             </section>
           </div>
         </details>

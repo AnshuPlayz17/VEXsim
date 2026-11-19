@@ -64,10 +64,13 @@ Any standard USB/Bluetooth gamepad works (Xbox, PlayStation, Logitech, 8BitDo…
 
 Default V5 layout: joysticks drive, L1/L2 lift up/down, R1 intake (close claw), R2 release (open claw), A flip wrist, X precision, B match load, Y camera. Controllers mapped with an older version are converted (L1/L2 become the lift).
 
+### Performance
+The field, venue and robots merge every non-moving part into one mesh per material, and each Pin is a single mesh, so a frame is a few hundred draw calls. **Graphics** in the setup screen's Advanced section: *Fast* (no shadows, 1× pixels), *High* (shadows, up to 1.5× pixels, the default) and *Ultra* (adds ambient occlusion and full HiDPI resolution; needs a strong GPU).
+
 ## Robots
 
 ### VEX (Override)
-**19109M** is modeled from the team's regionals code: the drive (4 blue motors geared 36:48 to 450 rpm, 3.25″ omnis, 12.75″ track, 10.5″ wheelbase, 15.5″ × 17.8″ frame, split arcade, coast), its claw on the back (stick forward drives away from the claw, like the real robot), grabbing a Cup with its Pin as one stack (from the field or a Loader), and its driver macros: R1 grabs and lifts to mid height (R1 again: to the top), and holding R2 lowers onto the Goal, then letting go opens the claw and lifts back up. Its weight (15 lb), cascade height (~33″) and claw reach are estimates.
+**19109M** is modeled from the team's regionals code: the drive (4 blue motors geared 36:48 to 450 rpm, 3.25″ omnis, 12.75″ track, 10.5″ wheelbase, 15.5″ × 17.8″ frame, split arcade, coast), its claw on the back (stick forward drives away from the claw, like the real robot), grabbing a Cup with its Pin as one stack (from the field or a Loader), and its driver macros: R1 grabs and lifts to mid height (R1 again: to the top), and holding R2 lowers onto the Goal, then letting go opens the claw and lifts back up. Its claw sits on a red-cartridge arm that swings over the top of the robot: at a Loader, Match Load (B) runs its L1 loading macro (cascade down, arm swings in, the Cup + Pin drops into the claw after 0.8 s), and R1 then lifts and swings the arm back out once the cascade is about 30% up, like its `B_ARM_OUT_HEIGHT`. Its weight (15 lb), cascade height (~33″) and claw reach are estimates.
 
 Built from real V5 parts: aluminum C-channel, 11 W smart motors with their gear cartridges, the V5 brain and battery, omni and traction wheels, and alliance-colored license plates. Each one has a working lift and claw.
 
